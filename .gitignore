@@ -6,3 +6,8 @@ blockchain.dSYM/Contents/Resources/DWARF/blockchain
 blockchain.dSYM/Contents/Info.plist
 blockchain.dSYM/Contents/Resources/Relocations/aarch64/blockchain.yml
 blockchain
+test
+.idea/inspectionProfiles/Project_Default.xml
+test.dSYM/Contents/Info.plist
+test.dSYM/Contents/Resources/DWARF/test
+test.dSYM/Contents/Resources/Relocations/aarch64/test.yml

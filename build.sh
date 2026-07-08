@@ -6,8 +6,9 @@ underline=$(tput smul)
 
 
 CC="gcc"
-CFLAGS=" -Wall -Wextra -Wno-unused-parameter -g1"
-
+CFLAGS=(-Wall -Wextra -Wno-unused-parameter -g1 -Iutils)
+SRCS=(blockchain.c utils/*.c)
+TEST=(test.c utils/*.c)
 
 help(){
   echo "---------------------------------------------------"
@@ -19,11 +20,16 @@ help(){
   echo "  -${bold}run:${normal} builds and runs the blockchain.c main file"
   echo "  -${bold}build:${normal} builds the blockchain.c main file"
   echo "  -${bold}clean:${normal} cleans the workspace from previous builds"
+  echo "  -${bold}test:${normal} runs the test.c file with the test of the structure"
   exit 1
 }
 
 build() {
-  $CC "$CFLAGS" -o blockchain blockchain.c
+  $CC "${CFLAGS[@]}" "${SRCS[@]}" -o blockchain
+}
+
+buildTest(){
+  $CC "${CFLAGS[@]}" "${TEST[@]}" -o test
 }
 
 clean() {
@@ -33,6 +39,11 @@ clean() {
 run() {
   build
   ./blockchain
+}
+
+test(){
+  buildTest
+  ./test
 }
 
 if [[ $# -lt 1 ]]; then
@@ -52,6 +63,10 @@ case "$1" in
 
   run)
     run
+    ;;
+
+  test)
+    test
     ;;
 
   *)
