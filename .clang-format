@@ -1,0 +1,18 @@
+---
+# ============================================================
+#  Stile di formattazione condiviso del progetto.
+#  Base LLVM (default di clang-format) con pochi ritocchi.
+#  Uso:  clang-format -i <file>   (oppure format-on-save in VSCode)
+# ============================================================
+Language:        Cpp          # clang-format tratta il C come "Cpp"
+BasedOnStyle:    LLVM
+IndentWidth:     4            # 4 spazi (LLVM di default ne usa 2)
+TabWidth:        4
+UseTab:          Never        # solo spazi, mai tab
+ColumnLimit:     100          # piu' respiro delle 80 di LLVM
+PointerAlignment: Right       # "char *out", puntatore attaccato al nome
+BreakBeforeBraces: Attach     # graffa aperta sulla stessa riga (K&R)
+AllowShortIfStatementsOnASingleLine: WithoutElse   # "if (!p) return ERR;" ok
+AllowShortFunctionsOnASingleLine: Empty
+SortIncludes:    false        # NON riordina gli #include (l'ordine puo' contare)
+...

@@ -11,3 +11,11 @@ test
 test.dSYM/Contents/Info.plist
 test.dSYM/Contents/Resources/DWARF/test
 test.dSYM/Contents/Resources/Relocations/aarch64/test.yml
+
+# Artefatti di compilazione C
+*.o
+# Eseguibili prodotti dal build
+code/blockchain
+code/test_encoding
+# Log dei processi
+*-*.log

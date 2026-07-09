@@ -1,15 +1,52 @@
-CC=gcc
-CFLAGS= -Wall -Wextra -g1 #-Wall -Wextra can arise all the errors during runtime
+# ============================================================
+#  Blockchain OS - Makefile
+#  Un solo eseguibile (bootstrapper): via fork() diventa
+#  node / miner / client. Niente exec => i figli ereditano
+#  la shared memory e i semafori gia' inizializzati.
+# ============================================================
 
-build: blockchain
+CC      := gcc
+CFLAGS  := -std=gnu11 -Wall -Wextra -g -I. -Iutils
+LDFLAGS := -pthread          # semafori POSIX (sem_*)
+LDLIBS  := -lrt              # shared memory POSIX (shm_open)
 
-blockchain: blockchain.c
-	$(CC) $(CFLAGS) -o blockchain blockchain.c #the actual command that runs and compiles the code into blockchain.c
+# --- Sorgenti dell'eseguibile principale ---
+# node.c, miner.c, client.c, sha256.c si aggiungeranno da soli via wildcard.
+SRCS      := blockchain.c $(wildcard utils/*.c)
+OBJS      := $(SRCS:.c=.o)
 
+UTIL_OBJS := $(patsubst %.c,%.o,$(wildcard utils/*.c))
+HDRS      := $(wildcard *.h) $(wildcard utils/*.h)
 
-# Possible commands
-clean:
-	rm -f blockchain
+# --- Eseguibili prodotti ---
+BIN       := blockchain
+TEST_BIN  := test_encoding
+
+# Argomenti passabili a run:
+#   make run ARGS="3 5 10 1 12 initial_state.csv"
+ARGS ?=
+
+.PHONY: build run clean test
+
+build: $(BIN)
+
+$(BIN): $(OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
+
+# Compilazione separata: ogni .o dipende dal suo .c e da TUTTI gli header
+%.o: %.c $(HDRS)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 run: build
-	./blockchain $(ARGS)
+	./$(BIN) $(ARGS)
+
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
+$(TEST_BIN): test.o $(UTIL_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+clean:
+	rm -f $(BIN) $(TEST_BIN) $(OBJS) test.o
+	rm -f *-*.log
+	rm -f /dev/shm/blockchain_*
