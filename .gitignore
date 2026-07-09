@@ -19,3 +19,4 @@ code/blockchain
 code/test_encoding
 # Log dei processi
 *-*.log
+.idea/codeStyles/codeStyleConfig.xml
