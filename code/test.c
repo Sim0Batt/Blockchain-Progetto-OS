@@ -1,7 +1,7 @@
 #include <stdio.h>
 
 #include "utils/errors.h"
-#include "utils/encoding.h"
+#include "encoding/encoding.h"
 
 int main(int argc, char *argv[]) {
 

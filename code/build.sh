@@ -7,8 +7,8 @@ underline=$(tput smul)
 
 CC="gcc"
 CFLAGS=(-Wall -Wextra -Wno-unused-parameter -g1 -Iutils)
-SRCS=(blockchain.c utils/*.c)
-TEST=(test.c utils/*.c)
+SRCS=(blockchain.c utils/*.c encoding/*.c)
+TEST=(test.c utils/*.c encoding/*.c)
 
 help(){
   echo "---------------------------------------------------"
