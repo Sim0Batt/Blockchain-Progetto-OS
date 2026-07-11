@@ -21,7 +21,7 @@
 /* Crea il segmento, lo mappa, azzera i buffer e inizializza i 7 semafori
  * (pshared=1). Va chiamata UNA volta dal padre PRIMA di fork().
  * Ritorna il puntatore mappato, oppure NULL su errore. */
-SharedState *ipc_create(void);
+SharedState *ipc_create(uint32_t difficulty);
 
 /* Smappa e rimuove il segmento: sem_destroy + munmap + shm_unlink.
  * Chiamata dal padre allo shutdown. */
