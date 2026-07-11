@@ -5,7 +5,7 @@
 
 void calculateSha256(const char *input, char *output);
 
-void calculateMerkelRoot(const char *transaction, const char *merkelRoot);
+void calculateMerkleRoot(const char *transaction, const char *merkleRoot);
 
 void calculateBlockHash(const Block *block, char *hash);
 
