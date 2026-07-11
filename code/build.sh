@@ -6,9 +6,11 @@ underline=$(tput smul)
 
 
 CC="gcc"
-CFLAGS=(-Wall -Wextra -Wno-unused-parameter -g1 -Iutils)
-SRCS=(blockchain.c utils/*.c)
-TEST=(test.c utils/*.c)
+CFLAGS=(-Wall -Wextra -Wno-unused-parameter -g1 -Iutils -I/opt/homebrew/opt/openssl@3/include)
+SRCS=(blockchain.c utils/*.c encoding/*.c)
+TEST=(test.c utils/*.c encoding/*.c)
+
+LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib"
 
 help(){
   echo "---------------------------------------------------"
@@ -25,11 +27,11 @@ help(){
 }
 
 build() {
-  $CC "${CFLAGS[@]}" "${SRCS[@]}" -o blockchain
+  $CC "${CFLAGS[@]}" "${SRCS[@]}" -o blockchain $LDFLAGS -lcrypto
 }
 
 buildTest(){
-  $CC "${CFLAGS[@]}" "${TEST[@]}" -o test
+  $CC "${CFLAGS[@]}" "${TEST[@]}" -o test $LDFLAGS -lcrypto
 }
 
 clean() {

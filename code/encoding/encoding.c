@@ -4,7 +4,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 
-#include "errors.h"
+#include "../utils/errors.h"
 
 /*
  * Queste funzioni servono al fine del salvataggio dei dati sul CSV, permettono la creazione del HEX
