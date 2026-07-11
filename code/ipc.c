@@ -6,44 +6,47 @@
 #include <unistd.h>   /* ftruncate, close          */
 #include <string.h>   /* memset                    */
 #include <stdio.h>    /* perror                    */
+#include <errno.h>    /* errno, EINTR              */
 
-/* Crea il segmento di shared memory, lo mappa e inizializza tutto.
- * Va chiamata UNA volta dal padre PRIMA di fork(). */
+/* ---- Helper interno ---- */
+
+/* sem_wait che riprova se interrotto da un signal (EINTR). I signal di
+ * pause/resume (SIGCONT) o un SIGCHLD possono interrompere una sem_wait
+ * in corso: non e' un errore, si riprova. */
+static int sem_wait_safe(sem_t *s) {
+    int r;
+    do {
+        r = sem_wait(s);
+    } while (r == -1 && errno == EINTR);
+    return r;
+}
+
+/* ============================ Ciclo di vita ============================ */
+
 SharedState *ipc_create(uint32_t difficulty) {
-    /* 1. Crea/apre l'oggetto di shared memory con nome. */
     int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0600);
     if (fd == -1) {
         perror("ipc_create: shm_open");
         return NULL;
     }
-
-    /* 2. Dimensiona l'oggetto: deve contenere una SharedState intera. */
     if (ftruncate(fd, sizeof(SharedState)) == -1) {
         perror("ipc_create: ftruncate");
         close(fd);
         shm_unlink(SHM_NAME);
         return NULL;
     }
-
-    /* 3. Mappa l'oggetto (MAP_SHARED: scritture visibili a tutti i processi). */
     SharedState *st = mmap(NULL, sizeof(SharedState), PROT_READ | PROT_WRITE,
                            MAP_SHARED, fd, 0);
-    close(fd); /* dopo mmap il fd non serve piu' */
+    close(fd);
     if (st == MAP_FAILED) {
         perror("ipc_create: mmap");
         shm_unlink(SHM_NAME);
         return NULL;
     }
-
-    /* 4. Azzera tutto e inizializza i campi non-semaforo. */
     memset(st, 0, sizeof(SharedState));
     st->height = 0;
     st->difficulty = difficulty;
     st->running = 1;
-    /* head/tail dei buffer sono gia' 0 grazie al memset. */
-
-    /* 5. Inizializza i 7 semafori (pshared=1: vivono nella shm, condivisi
-     *    tra processi). Valori iniziali = pattern bounded buffer + mutex. */
     if (sem_init(&st->tx_pool.empty, 1, TX_POOL_CAP) == -1 ||
         sem_init(&st->tx_pool.full, 1, 0) == -1 ||
         sem_init(&st->tx_pool.mutex, 1, 1) == -1 ||
@@ -56,12 +59,9 @@ SharedState *ipc_create(uint32_t difficulty) {
         shm_unlink(SHM_NAME);
         return NULL;
     }
-
     return st;
 }
 
-/* Distrugge i semafori, smappa e rimuove il segmento. Chiamata dal padre
- * allo shutdown, quando i figli sono terminati. */
 void ipc_destroy(SharedState *st) {
     if (st == NULL) {
         return;
@@ -75,4 +75,84 @@ void ipc_destroy(SharedState *st) {
     sem_destroy(&st->chain_mutex);
     munmap(st, sizeof(SharedState));
     shm_unlink(SHM_NAME);
+}
+
+/* ================= Bounded buffer transazioni (client -> miner) ======== */
+
+int txpool_put(SharedState *st, const Transaction *tx) {
+    if (st == NULL || tx == NULL) {
+        return PARSE_ERROR;
+    }
+    if (sem_wait_safe(&st->tx_pool.empty) == -1) { /* aspetta uno slot libero */
+        return IPC_ERROR;
+    }
+    sem_wait_safe(&st->tx_pool.mutex); /* --- sezione critica --- */
+    st->tx_pool.slots[st->tx_pool.tail] = *tx;
+    st->tx_pool.tail = (st->tx_pool.tail + 1) % TX_POOL_CAP;
+    sem_post(&st->tx_pool.mutex);
+    sem_post(&st->tx_pool.full); /* un elemento in piu' */
+    return SUCCESS;
+}
+
+int txpool_get(SharedState *st, Transaction *out) {
+    if (st == NULL || out == NULL) {
+        return PARSE_ERROR;
+    }
+    if (sem_wait_safe(&st->tx_pool.full) == -1) { /* aspetta un elemento */
+        return IPC_ERROR;
+    }
+    sem_wait_safe(&st->tx_pool.mutex);
+    *out = st->tx_pool.slots[st->tx_pool.head];
+    st->tx_pool.head = (st->tx_pool.head + 1) % TX_POOL_CAP;
+    sem_post(&st->tx_pool.mutex);
+    sem_post(&st->tx_pool.empty); /* uno slot libero in piu' */
+    return SUCCESS;
+}
+
+int txpool_tryget(SharedState *st, Transaction *out) {
+    if (st == NULL || out == NULL) {
+        return PARSE_ERROR;
+    }
+    if (sem_trywait(&st->tx_pool.full) == -1) {
+        /* vuoto (EAGAIN) o interrotto: nessun elemento disponibile ora */
+        return IPC_EMPTY;
+    }
+    sem_wait_safe(&st->tx_pool.mutex);
+    *out = st->tx_pool.slots[st->tx_pool.head];
+    st->tx_pool.head = (st->tx_pool.head + 1) % TX_POOL_CAP;
+    sem_post(&st->tx_pool.mutex);
+    sem_post(&st->tx_pool.empty);
+    return SUCCESS;
+}
+
+/* ================= Bounded buffer blocchi (miner -> node) ============== */
+
+int blockbuf_put(SharedState *st, const Block *blk) {
+    if (st == NULL || blk == NULL) {
+        return PARSE_ERROR;
+    }
+    if (sem_wait_safe(&st->block_buf.empty) == -1) {
+        return IPC_ERROR;
+    }
+    sem_wait_safe(&st->block_buf.mutex);
+    st->block_buf.slots[st->block_buf.tail] = *blk;
+    st->block_buf.tail = (st->block_buf.tail + 1) % BLOCK_BUF_CAP;
+    sem_post(&st->block_buf.mutex);
+    sem_post(&st->block_buf.full);
+    return SUCCESS;
+}
+
+int blockbuf_get(SharedState *st, Block *out) {
+    if (st == NULL || out == NULL) {
+        return PARSE_ERROR;
+    }
+    if (sem_wait_safe(&st->block_buf.full) == -1) {
+        return IPC_ERROR;
+    }
+    sem_wait_safe(&st->block_buf.mutex);
+    *out = st->block_buf.slots[st->block_buf.head];
+    st->block_buf.head = (st->block_buf.head + 1) % BLOCK_BUF_CAP;
+    sem_post(&st->block_buf.mutex);
+    sem_post(&st->block_buf.empty);
+    return SUCCESS;
 }
