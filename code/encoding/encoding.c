@@ -77,14 +77,14 @@ int hexToBytes(const unsigned char *hex, unsigned char *out, size_t size) {
      * giusta. Dato che ora convertiamo da Hex a Byte, per ogni 2 Hex ci sarà un solo byte quindi la
      * grandezza del buffer dovrà essere la metà della lunghezza del Hex.
      */
-    if (strlen(hex) != size * 2) return PARSE_ERROR;
+    if (strlen((const char *) hex) != size * 2) return PARSE_ERROR;
 
     for (size_t i = 0; i < size; i++) {
         unsigned int byte = 0;
 
         // Qui avviene la conversione da Hex a Byte, per ogni 2 Hex troviamo un byte secondo il
         // metodo di prima (%02x)
-        if (sscanf(hex + (i * 2), "%02x", &byte) != 1) return PARSE_ERROR;
+        if (sscanf((const char *) hex + (i * 2), "%02x", &byte) != 1) return PARSE_ERROR;
 
         /*
          * Qui converto in char perché byte è un unsigned int per convenzione di sscanf, ma alla

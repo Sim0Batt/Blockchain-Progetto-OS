@@ -1,5 +1,4 @@
 #include <stdio.h>
-
 #include "utils/errors.h"
 #include "encoding/encoding.h"
 
