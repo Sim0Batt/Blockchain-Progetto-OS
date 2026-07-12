@@ -20,3 +20,4 @@ code/test_encoding
 # Log dei processi
 *-*.log
 .idea/codeStyles/codeStyleConfig.xml
+code/test_state.csv

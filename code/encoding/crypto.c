@@ -11,7 +11,7 @@
 void calculateSha256(const char *input, char *output) {
     unsigned char hash[SHA256_DIGEST_LENGTH];
 
-    SHA256(input, strlen(input), hash);
+    SHA256((const unsigned char *)input, strlen(input), hash);
 
     bytesToHex(hash, SHA256_DIGEST_LENGTH, output, HASH_BUF_SIZE);
 
@@ -28,7 +28,7 @@ void calculateSha256(const char *input, char *output) {
  * permettere la creazione dell'albero.
  */
 
-void calculateMerkleRoot(const char *transaction, const char *merkleRoot) {
+void calculateMerkleRoot(const char *transaction, char *merkleRoot) {
     char emptyBuffer[HASH_BUF_SIZE];
     calculateSha256("", emptyBuffer);
 
