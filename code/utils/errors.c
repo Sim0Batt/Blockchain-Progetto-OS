@@ -21,6 +21,8 @@ char *codesToString(int code) {
         return "PARSE_ERROR";
     case MEMORY_ERROR:
         return "MEMORY_ERROR";
+    case IPC_EMPTY:
+        return "IPC_EMPTY";
     default:
         return "UNKNOWN_ERROR";
     }

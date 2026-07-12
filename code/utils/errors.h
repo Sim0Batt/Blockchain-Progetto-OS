@@ -10,6 +10,7 @@
 #define IPC_ERROR 6
 #define PARSE_ERROR 7
 #define MEMORY_ERROR 8
+#define IPC_EMPTY 9
 
 #include <string.h>
 

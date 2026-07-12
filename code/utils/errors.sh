@@ -9,3 +9,4 @@ readonly IO_ERROR=5
 readonly IPC_ERROR=6
 readonly PARSE_ERROR=7
 readonly MEMORY_ERROR=8
+readonly IPC_EMPTY=9

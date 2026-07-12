@@ -1,8 +1,19 @@
 #include <string.h>
+#include <errno.h>
+#include <semaphore.h>
 #include "../shared_state.h"
 #include "../utils/errors.h"
 #include "../encoding/crypto.h"
 #include "chain.h"
+
+
+static int semWaitSafe(sem_t *s) {
+    int r;
+    do {
+        r = sem_wait(s);
+    } while (r == -1 && errno == EINTR);
+    return r;
+}
 
 
 // Funzione di controllo validità del blocck
@@ -27,7 +38,7 @@ int validateBlock(const Block *previousBlock, const Block *newBlock) {
 // Funzione per aggiungere un blocco in coda all'array
 int appendChainBlock(SharedState *ss, const Block *newBlock) {
     // Prendiamo il mutex lock del semaforo
-    sem_wait(&ss->chain_mutex);
+    semWaitSafe(&ss->chain_mutex);
 
     int chainHeight = ss->height;
 
@@ -43,7 +54,7 @@ int appendChainBlock(SharedState *ss, const Block *newBlock) {
     }
 
     // Controlliamo il possibile memory overflow
-    if (chainHeight > MAX_CHAIN) {
+    if (chainHeight >= MAX_CHAIN) {
         sem_post(&ss->chain_mutex);
         return MEMORY_ERROR;
     }
