@@ -1,5 +1,6 @@
 #include "ipc.h"
 #include "utils/errors.h"
+#include "encoding/crypto.h"
 
 #include <fcntl.h>    /* O_CREAT, O_RDWR            */
 #include <sys/mman.h> /* shm_open, mmap, PROT_*, MAP_* */
@@ -154,5 +155,48 @@ int blockbufGet(SharedState *st, Block *out) {
     st->block_buf.head = (st->block_buf.head + 1) % BLOCK_BUF_CAP;
     sem_post(&st->block_buf.mutex);
     sem_post(&st->block_buf.empty);
+    return SUCCESS;
+}
+
+/* ==================== Chain: le tre letture ==================== */
+
+/* Lettura ottimistica dell'altezza, SENZA lock (read atomica di uint64_t
+ * su x86-64). Un valore stale costa al massimo un ciclo di mining sprecato. */
+uint64_t chainHeight(SharedState *st) {
+    if (st == NULL) {
+        return 0;
+    }
+    return st->height;
+}
+
+/* Copia il blocco di indice 'index'. Sotto lock: deve essere consistente
+ * (un append concorrente non deve farci leggere dati parziali). */
+int chainGetBlock(SharedState *st, uint64_t index, Block *out) {
+    if (st == NULL || out == NULL) {
+        return PARSE_ERROR;
+    }
+    semWaitSafe(&st->chain_mutex);
+    if (index >= st->height) {
+        sem_post(&st->chain_mutex);
+        return BLOCK_NOT_FOUND;
+    }
+    *out = st->chain[index];
+    sem_post(&st->chain_mutex);
+    return SUCCESS;
+}
+
+/* Hash del blocco in cima (serve al miner per il prev_hash del prossimo
+ * blocco). Sotto lock. Ritorna BLOCK_NOT_FOUND se la chain e' vuota. */
+int chainTopHash(SharedState *st, char out[HASH_BUF_SIZE]) {
+    if (st == NULL || out == NULL) {
+        return PARSE_ERROR;
+    }
+    semWaitSafe(&st->chain_mutex);
+    if (st->height == 0) {
+        sem_post(&st->chain_mutex);
+        return BLOCK_NOT_FOUND; /* chain vuota, nessuna cima */
+    }
+    calculateBlockHash(&st->chain[st->height - 1], out);
+    sem_post(&st->chain_mutex);
     return SUCCESS;
 }
