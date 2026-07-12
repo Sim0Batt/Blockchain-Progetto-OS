@@ -2,6 +2,7 @@
 #include "../shared_state.h"
 #include "../utils/errors.h"
 #include "../encoding/crypto.h"
+#include "chain.h"
 
 
 // Funzione di controllo validità del blocck
