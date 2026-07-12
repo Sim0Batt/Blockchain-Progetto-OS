@@ -52,7 +52,7 @@ int blockbufGet(SharedState *st, Block *out);
 
 /* Lettura ottimistica dell'altezza corrente, SENZA lock. Una lettura
  * stale costa al massimo un ciclo di mining sprecato, mai un errore:
- * il controllo autoritativo e' dentro chainAppendValidated(). */
+ * il controllo autoritativo e' dentro appendChainBlock() (in chain.c). */
 uint64_t chainHeight(SharedState *st);
 
 /* Copia in 'out' l'hash del blocco in cima (serve al miner per prev_hash).
@@ -62,12 +62,5 @@ int chainTopHash(SharedState *st, char out[HASH_BUF_SIZE]);
 /* Copia il blocco di indice 'index' in 'out'. Ritorna SUCCESS o
  * BLOCK_NOT_FOUND. Usato dal node per sincronizzare la sua copia locale. */
 int chainGetBlock(SharedState *st, uint64_t index, Block *out);
-
-/* CUORE DEL CONSENSO. Il node chiama questa per appendere un blocco.
- * Acquisisce chain_mutex, RI-VALIDA sotto lock (index == height e
- * prev_hash == hash della cima) e appende solo se valido. La
- * ri-validazione dentro il lock e' cio' che impedisce i fork.
- * Ritorna SUCCESS, INVALID_BLOCK o CHAIN_MISMATCH. */
-int chainAppendValidated(SharedState *st, const Block *blk);
 
 #endif /* IPC_H */
