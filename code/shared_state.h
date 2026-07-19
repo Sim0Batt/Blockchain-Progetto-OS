@@ -37,6 +37,15 @@ typedef struct {
     Transaction tx[MAX_TX_PER_BLOCK];      /* transazioni del blocco          */
 } Block;
 
+/* La blockchain: array di blocchi + altezza. NON vive in shared memory:
+ * ogni node ne possiede una copia locale privata (vincolo di progetto),
+ * quindi niente semafori. E' anche il tipo su cui csv_manager
+ * salva/carica. */
+typedef struct {
+    Block    blocks[MAX_CHAIN]; /* blocks[i] = blocco con index i */
+    uint64_t height;            /* quanti blocchi presenti        */
+} Blockchain;
+
 /* Bounded buffer transazioni: client (producer) -> miner (consumer).
  * Schema classico a 3 semafori. */
 typedef struct {
@@ -59,13 +68,9 @@ typedef struct {
 } BlockBuffer;
 
 /* Lo stato condiviso: UN solo segmento shm con dentro tutto.
- * Tutti i processi lo mappano via mmap. */
+ * Tutti i processi lo mappano via mmap. Contiene SOLO i canali di
+ * comunicazione: la chain NON e' condivisa (copie locali per-node). */
 typedef struct {
-    /* --- La chain condivisa (sezione critica) --- */
-    Block    chain[MAX_CHAIN]; /* chain[i] = blocco con index i        */
-    uint64_t height;           /* quanti blocchi presenti              */
-    sem_t    chain_mutex;      /* serializza gli append (init = 1)     */
-
     /* --- I due bounded buffer --- */
     TxPool      tx_pool;       /* client -> miner */
     BlockBuffer block_buf;     /* miner  -> node  */

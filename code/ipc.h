@@ -4,8 +4,9 @@
 #include "shared_state.h"
 
 /* ============================================================
- *  Layer IPC: gestione del segmento di shared memory, dei due
- *  bounded buffer e dell'accesso serializzato alla chain.
+ *  Layer IPC: gestione del segmento di shared memory e dei due
+ *  bounded buffer. La chain NON e' qui: ogni node ne possiede
+ *  una copia locale (tipo Blockchain).
  *
  *  Meccanismo: POSIX shared memory (shm_open) + semafori unnamed
  *  (pshared=1) embeddati in SharedState. I processi figli ereditano
@@ -18,7 +19,7 @@
 
 /* ---------------- Ciclo di vita (solo il bootstrapper) ---------------- */
 
-/* Crea il segmento, lo mappa, azzera i buffer e inizializza i 7 semafori
+/* Crea il segmento, lo mappa, azzera i buffer e inizializza i 6 semafori
  * (pshared=1). Va chiamata UNA volta dal padre PRIMA di fork().
  * Ritorna il puntatore mappato, oppure NULL su errore. */
 SharedState *ipcCreate(uint32_t difficulty);
@@ -47,20 +48,5 @@ int blockbufPut(SharedState *st, const Block *blk);
 
 /* Consumer (node): preleva un blocco da validare. Bloccante se vuoto. */
 int blockbufGet(SharedState *st, Block *out);
-
-/* ---------------- Chain condivisa (sezione critica) ------------------ */
-
-/* Lettura ottimistica dell'altezza corrente, SENZA lock. Una lettura
- * stale costa al massimo un ciclo di mining sprecato, mai un errore:
- * il controllo autoritativo e' dentro appendChainBlock() (in chain.c). */
-uint64_t chainHeight(SharedState *st);
-
-/* Copia in 'out' l'hash del blocco in cima (serve al miner per prev_hash).
- * Ritorna SUCCESS, oppure BLOCK_NOT_FOUND se la chain e' vuota. */
-int chainTopHash(SharedState *st, char out[HASH_BUF_SIZE]);
-
-/* Copia il blocco di indice 'index' in 'out'. Ritorna SUCCESS o
- * BLOCK_NOT_FOUND. Usato dal node per sincronizzare la sua copia locale. */
-int chainGetBlock(SharedState *st, uint64_t index, Block *out);
 
 #endif /* IPC_H */
