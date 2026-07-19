@@ -9,6 +9,8 @@
 #include <stdlib.h>
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
 
     char out[17];
 
@@ -22,7 +24,7 @@ int main(int argc, char *argv[]) {
     uint64_t valueOut;
     rc = hexToU64("0000000000001337", &valueOut);
     printf("Hex to U64 Exit Value: %s\n", codesToString(rc));
-    printf("U64: %llu\n", valueOut);
+    printf("U64: %llu\n", (unsigned long long)valueOut);
 
     // Bytes to Hex
     unsigned char testBytes[4] = {'t', 'e', 's', 't'};

@@ -16,6 +16,7 @@ SRCS      := blockchain.c ipc.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
 OBJS      := $(SRCS:.c=.o)
 
 UTIL_OBJS := $(patsubst %.c,%.o,$(wildcard utils/*.c))
+ENC_OBJS  := $(patsubst %.c,%.o,$(wildcard encoding/*.c))
 HDRS      := $(wildcard *.h) $(wildcard utils/*.h) $(wildcard encoding/*.h)
 
 # --- Eseguibili prodotti ---
@@ -43,7 +44,7 @@ run: build
 test: $(TEST_BIN)
 	./$(TEST_BIN)
 
-$(TEST_BIN): test.o $(UTIL_OBJS)
+$(TEST_BIN): test.o $(UTIL_OBJS) $(ENC_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
