@@ -7,6 +7,6 @@
 
 
 int validateBlock(const Block *previousBlock, const Block *newBlock);
-int appendChainBlock(SharedState *ss, const Block *newBlock);
+int appendChainBlock(Blockchain *chain, const Block *newBlock);
 
 #endif

@@ -9,6 +9,8 @@
 #include <stdlib.h>
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
 
     char out[17];
 
@@ -22,7 +24,7 @@ int main(int argc, char *argv[]) {
     uint64_t valueOut;
     rc = hexToU64("0000000000001337", &valueOut);
     printf("Hex to U64 Exit Value: %s\n", codesToString(rc));
-    printf("U64: %llu\n", valueOut);
+    printf("U64: %llu\n", (unsigned long long)valueOut);
 
     // Bytes to Hex
     unsigned char testBytes[4] = {'t', 'e', 's', 't'};
@@ -86,13 +88,13 @@ printf("--- TEST MERKLE ROOT ---\n");
 
     printf("--- TEST CSV I/O E CHAIN VALIDATION ---\n");
 
-    // 1. Creiamo uno stato fittizio ALLOCANDOLO SULL'HEAP
-    SharedState *original_ss = malloc(sizeof(SharedState));
-    if (original_ss == NULL) {
-        printf("Errore: memoria Heap insufficiente per allocare original_ss!\n");
+    // 1. Creiamo una chain fittizia ALLOCANDOLA SULL'HEAP
+    Blockchain *originalChain = malloc(sizeof(Blockchain));
+    if (originalChain == NULL) {
+        printf("Errore: memoria Heap insufficiente per allocare originalChain!\n");
         return 1;
     }
-    memset(original_ss, 0, sizeof(SharedState));
+    memset(originalChain, 0, sizeof(Blockchain));
 
     // -- Creazione del Blocco Genesis (Indice 0) --
     Block b0;
@@ -104,8 +106,8 @@ printf("--- TEST MERKLE ROOT ---\n");
     calculateMerkleRoot("Genesis block", b0.merkle_root);
     strcpy(b0.tx[0].text, "Genesis block");
     b0.tx_count = 1;
-    original_ss->chain[0] = b0;
-    original_ss->height = 1;
+    originalChain->blocks[0] = b0;
+    originalChain->height = 1;
 
     // -- Creazione del Blocco 1 --
     Block b1;
@@ -118,36 +120,36 @@ printf("--- TEST MERKLE ROOT ---\n");
     strcpy(b1.tx[0].text, "Alice pays Bob 10 coins");
     strcpy(b1.tx[1].text, "Charlie pays Dave 5 coins");
     b1.tx_count = 2;
-    original_ss->chain[1] = b1;
-    original_ss->height = 2;
+    originalChain->blocks[1] = b1;
+    originalChain->height = 2;
 
     // 2. Salviamo lo stato sul file CSV
     const char *test_csv_file = "test_state.csv";
-    int save_rc = saveBlockchainCsv(original_ss, test_csv_file);
+    int save_rc = saveBlockchainCsv(originalChain, test_csv_file);
     printf("Salvataggio CSV (%s): %s\n", test_csv_file, codesToString(save_rc));
 
     if (save_rc == SUCCESS) {
-        // 3. Creiamo un nuovo stato vuoto ALLOCANDOLO SULL'HEAP
-        SharedState *loaded_ss = malloc(sizeof(SharedState));
-        if (loaded_ss == NULL) {
-            printf("Errore: memoria Heap insufficiente per allocare loaded_ss!\n");
-            free(original_ss);
+        // 3. Creiamo una nuova chain vuota ALLOCANDOLA SULL'HEAP
+        Blockchain *loadedChain = malloc(sizeof(Blockchain));
+        if (loadedChain == NULL) {
+            printf("Errore: memoria Heap insufficiente per allocare loadedChain!\n");
+            free(originalChain);
             return 1;
         }
-        memset(loaded_ss, 0, sizeof(SharedState));
+        memset(loadedChain, 0, sizeof(Blockchain));
 
         // 4. Carichiamo il file CSV
-        int load_rc = loadCsv(test_csv_file, loaded_ss);
+        int load_rc = loadCsv(test_csv_file, loadedChain);
         printf("Caricamento CSV (%s): %s\n\n", test_csv_file, codesToString(load_rc));
 
         if (load_rc == SUCCESS) {
             printf("--- RISULTATO DEL CARICAMENTO ---\n");
             printf("Altezza originale: %llu | Altezza caricata: %llu\n",
-                   (unsigned long long)original_ss->height, (unsigned long long)loaded_ss->height);
+                   (unsigned long long)originalChain->height, (unsigned long long)loadedChain->height);
 
             // 5. Verifichiamo i dati letti dal Blocco 1
-            if (loaded_ss->height >= 2) {
-                Block loaded_b1 = loaded_ss->chain[1];
+            if (loadedChain->height >= 2) {
+                Block loaded_b1 = loadedChain->blocks[1];
                 printf("\nDati del Blocco 1 caricato:\n");
                 printf(" - Index: %llu\n", (unsigned long long)loaded_b1.index);
                 printf(" - Prev Hash: %s\n", loaded_b1.prev_hash);
@@ -157,10 +159,10 @@ printf("--- TEST MERKLE ROOT ---\n");
                 }
             }
         }
-        free(loaded_ss); // Liberiamo la memoria Heap
+        free(loadedChain); // Liberiamo la memoria Heap
     }
 
-    free(original_ss); // Liberiamo la memoria Heap
+    free(originalChain); // Liberiamo la memoria Heap
 
     return 0;
 }
