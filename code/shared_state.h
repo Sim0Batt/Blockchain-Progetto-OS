@@ -4,80 +4,55 @@
 #include <stdint.h>
 #include <semaphore.h>
 
-/* ============================================================
- *  Limiti a compile-time.
- *  La shared memory ha dimensione FISSA, quindi ogni struttura
- *  qui dentro deve avere taglia nota a compile-time:
- *  niente puntatori, niente malloc.
- * ============================================================ */
-#define HASH_HEX_LEN      64                  /* SHA256 = 256 bit = 64 char hex */
-#define HASH_BUF_SIZE     (HASH_HEX_LEN + 1)  /* + terminatore '\0'            */
+#define HASH_HEX_LEN      64
+#define HASH_BUF_SIZE     (HASH_HEX_LEN + 1)
+#define MAX_TX_PER_BLOCK  16
+#define TX_MAX_LEN        256
+#define MAX_CHAIN         1024
+#define TX_POOL_CAP       64
+#define MAX_NODES         16     /* tetto sul numero di node        */
+#define NODE_INBOX_CAP    32     /* slot inbox di un node           */
 
-#define MAX_TX_PER_BLOCK  16    /* transazioni massime per blocco       */
-#define TX_MAX_LEN        256   /* lunghezza massima di una transazione */
-#define MAX_CHAIN        1024   /* blocchi massimi nella chain          */
-#define TX_POOL_CAP        64   /* slot bounded buffer transazioni      */
-#define BLOCK_BUF_CAP      32   /* slot bounded buffer blocchi          */
+typedef struct { char text[TX_MAX_LEN]; } Transaction;
 
-/* Una transazione: stringa a lunghezza fissa (bounded dalla regex). */
 typedef struct {
-    char text[TX_MAX_LEN];
-} Transaction;
-
-/* Un blocco. Hash come stringhe hex (coerenti col CSV e con
- * blockchain.sh). Il block hash copre solo i 5 campi header:
- * le transazioni sono impegnate via merkle_root. */
-typedef struct {
-    uint64_t    index;                     /* posizione nella chain (0-based) */
-    uint64_t    timestamp;                 /* unix epoch, come nel CSV        */
-    char        prev_hash[HASH_BUF_SIZE];  /* hash header del blocco prec.    */
-    char        merkle_root[HASH_BUF_SIZE];/* radice merkle delle tx          */
-    uint64_t    nonce;                     /* proof-of-work simulato          */
-    uint32_t    tx_count;                  /* quante tx valide in tx[]        */
-    Transaction tx[MAX_TX_PER_BLOCK];      /* transazioni del blocco          */
+    uint64_t    index;
+    uint64_t    timestamp;
+    char        prev_hash[HASH_BUF_SIZE];
+    char        merkle_root[HASH_BUF_SIZE];
+    uint64_t    nonce;
+    uint32_t    tx_count;
+    Transaction tx[MAX_TX_PER_BLOCK];
 } Block;
 
-/* La blockchain: array di blocchi + altezza. NON vive in shared memory:
- * ogni node ne possiede una copia locale privata (vincolo di progetto),
- * quindi niente semafori. E' anche il tipo su cui csv_manager
- * salva/carica. */
+/* La chain: tipo riusabile, copia LOCALE di ogni node. Non in shm. */
 typedef struct {
-    Block    blocks[MAX_CHAIN]; /* blocks[i] = blocco con index i */
-    uint64_t height;            /* quanti blocchi presenti        */
+    Block    blocks[MAX_CHAIN];
+    uint64_t height;
 } Blockchain;
 
-/* Bounded buffer transazioni: client (producer) -> miner (consumer).
- * Schema classico a 3 semafori. */
+/* Bounded buffer transazioni: client -> miner. */
 typedef struct {
     Transaction slots[TX_POOL_CAP];
-    int   head;          /* prossimo da consumare */
-    int   tail;          /* prossimo da riempire  */
-    sem_t empty;         /* slot liberi (init = TX_POOL_CAP) */
-    sem_t full;          /* slot pieni  (init = 0)           */
-    sem_t mutex;         /* mutua escl. (init = 1)           */
+    int   head, tail;
+    sem_t empty, full, mutex;
 } TxPool;
 
-/* Bounded buffer blocchi: miner (producer) -> node (consumer). */
+/* Inbox di un node: bounded buffer di blocchi in arrivo (broadcast del
+ * miner + propagazione dai peer). Trasporto IPC, NON chain. */
 typedef struct {
-    Block slots[BLOCK_BUF_CAP];
-    int   head;
-    int   tail;
-    sem_t empty;         /* init = BLOCK_BUF_CAP */
-    sem_t full;          /* init = 0             */
-    sem_t mutex;         /* init = 1             */
-} BlockBuffer;
+    Block slots[NODE_INBOX_CAP];
+    int   head, tail;
+    sem_t empty, full, mutex;
+} NodeInbox;
 
-/* Lo stato condiviso: UN solo segmento shm con dentro tutto.
- * Tutti i processi lo mappano via mmap. Contiene SOLO i canali di
- * comunicazione: la chain NON e' condivisa (copie locali per-node). */
+/* Stato CONDIVISO: solo canali di comunicazione. NIENTE chain. */
 typedef struct {
-    /* --- I due bounded buffer --- */
-    TxPool      tx_pool;       /* client -> miner */
-    BlockBuffer block_buf;     /* miner  -> node  */
-
-    /* --- Configurazione runtime --- */
-    uint32_t     difficulty;   /* denominatore prob. di mining */
-    volatile int running;      /* 0 => shutdown pulito         */
+    TxPool       tx_pool;               /* client -> miner            */
+    NodeInbox    inboxes[MAX_NODES];    /* miner/peer -> node         */
+    uint32_t     num_nodes;             /* node attivi (<= MAX_NODES) */
+    uint32_t     difficulty;
+    volatile int running;
 } SharedState;
 
-#endif /* SHARED_STATE_H */
+#endif
