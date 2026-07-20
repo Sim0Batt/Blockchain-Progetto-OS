@@ -14,7 +14,7 @@
 
 /* ================= Helper interni (non esposti in miner.h) ============ */
 
-// Scrive una riga di log con timestamp leggibile, tipo "[2026-07-19 10:03:11] [miner 1 pid 4821] messaggio"
+// Scrive una riga di log con timestamp, id del miner e pid.
 static void minerLog(FILE *log, int minerId, const char *fmt, ...) {
     if (log == NULL) {
         return;
@@ -34,13 +34,12 @@ static void minerLog(FILE *log, int minerId, const char *fmt, ...) {
     va_end(args);
 
     fprintf(log, "\n");
-    fflush(log); // flush subito: vogliamo il log aggiornato anche se il processo viene ucciso
+    fflush(log); // il log deve restare leggibile anche se il processo viene ucciso
 }
 
-// Combina i due motivi per cui un tentativo di mining va abortito: la cima
-// e' avanzata (minerShouldAbort) oppure e' stato richiesto lo shutdown
-// pulito (st->running == 0). Tenuta separata da minerShouldAbort perche'
-// quest'ultima deve restare un check "puro" sulla cima, testabile da solo.
+// Combina i due motivi di abort: cima avanzata o shutdown richiesto.
+// Separata da minerShouldAbort per lasciare a quest'ultima un check puro
+// sulla cima, testabile da solo.
 static int minerAbortRequested(SharedState *st, uint64_t builtOnIndex) {
     if (!st->running) {
         return 1;
@@ -48,9 +47,12 @@ static int minerAbortRequested(SharedState *st, uint64_t builtOnIndex) {
     return minerShouldAbort(st, builtOnIndex);
 }
 
-// nanosleep interrompibile da EINTR: riprende dal residuo. Stesso helper
-// (e stesso nome) di client.c: i signal di pause/resume o un SIGCHLD non
-// devono accorciare l'attesa.
+/* Attesa dopo un errore transitorio, prima di riprovare. Serve a non
+ * riciclare il loop a CPU piena; resta abbastanza corta da non incidere
+ * sulla latenza dello shutdown. */
+#define ERROR_RETRY_SECONDS 0.1
+
+// nanosleep che riprende dal residuo se interrotto da un signal (EINTR).
 static void sleepInterruptible(double seconds) {
     if (seconds <= 0.0) {
         return;
@@ -65,24 +67,19 @@ static void sleepInterruptible(double seconds) {
     }
 }
 
-/* ---------------- Cima locale (vedi nota architetturale in miner.h) ----
- * Dopo il refactor la chain NON e' piu' in shared memory: chainHeight() e
- * chainTopHash() non esistono piu' in ipc.h. Ogni processo tiene una copia
- * locale, quindi il miner tiene qui l'ultima cima NOTA A QUESTO PROCESSO:
- * indice del prossimo blocco da costruire + hash del blocco in cima.
- * Inizializzata pigramente alla chain vuota, avanza quando questo miner
- * vince una corsa (minerAdvanceLocalTip).                               */
+/* La chain non e' condivisa: ogni processo ne tiene una copia locale.
+ * Qui il miner conserva la cima nota a se stesso: indice del prossimo
+ * blocco da costruire e hash del blocco in cima. Vedi la nota
+ * architetturale in miner.h. */
 static uint64_t minerTipIndex = 0;
 static char     minerTipHash[HASH_BUF_SIZE];
 static int      minerTipReady = 0;
 
-// Fa avanzare la cima locale dopo che QUESTO miner ha piazzato un blocco:
-// il prossimo candidato si costruira' sopra di esso.
-// TODO: confermare con Nicola. Qui l'avanzamento e' ottimistico: diamo per
-// accettato il blocco appena consegnato al block_buf, ma e' il node a
-// validarlo e ad appenderlo davvero (appendChainBlock), e potrebbe
-// rifiutarlo. Nel modello a chain locale l'aggiornamento autoritativo
-// dovrebbe arrivare dal node, non da noi.
+// Avanza la cima locale dopo che questo miner ha piazzato un blocco.
+// TODO: confermare con Nicola. L'avanzamento e' ottimistico: diamo per
+// accettato il blocco appena consegnato al block_buf, ma a validarlo e
+// appenderlo e' il node, che potrebbe rifiutarlo. L'aggiornamento
+// autoritativo dovrebbe arrivare da lui.
 static void minerAdvanceLocalTip(const Block *blk) {
     calculateBlockHash(blk, minerTipHash);
     minerTipIndex = blk->index + 1;
@@ -97,9 +94,8 @@ int minerReadTip(SharedState *st, uint64_t *tipIndex, char tipHash[HASH_BUF_SIZE
     }
 
     if (!minerTipReady) {
-        // Prima chiamata: partiamo dalla chain vuota. Nessun blocco
-        // precedente => prev_hash convenzionale = hash della stringa vuota
-        // (stessa convenzione usata per il genesis in test.c).
+        // Chain vuota: nessun blocco precedente, prev_hash convenzionale
+        // = sha256(""), stessa convenzione del genesis.
         calculateSha256("", minerTipHash);
         minerTipIndex = 0;
         minerTipReady = 1;
@@ -115,21 +111,15 @@ int minerShouldAbort(SharedState *st, uint64_t builtOnIndex) {
         return 1; // stato invalido: per sicurezza consideriamo il lavoro stale
     }
     // La cima e' avanzata rispetto a quando abbiamo iniziato a costruire
-    // il candidato => il nostro prev_hash/index non sono piu' validi.
+    // il candidato => prev_hash e index non sono piu' validi.
     //
-    // TODO: confermare con Nicola. QUESTO E' IL PUNTO DI INTEGRAZIONE che
-    // il refactor ha lasciato scoperto. minerTipIndex e' la cima locale di
-    // QUESTO processo: avanza solo quando siamo NOI a minare, quindi oggi
-    // questo confronto non puo' mai rilevare che un ALTRO miner ha vinto
-    // la corsa. L'abort resta funzionante solo per lo shutdown (gestito da
-    // minerAbortRequested, che controlla st->running).
-    // Il refactor ha rimosso chainHeight()/chainTopHash() da ipc.h senza
-    // sostituirli, e SharedState non espone piu' nessuna vista sulla cima:
-    // serve un canale node -> miner in shared memory, es. un campo
+    // TODO: confermare con Nicola. minerTipIndex e' la cima locale di
+    // questo processo e avanza solo quando siamo noi a minare: il
+    // confronto non puo' quindi rilevare che un altro miner ha vinto la
+    // corsa. Serve un canale node -> miner in shared memory, es. un campo
     //     struct { uint64_t height; char top_hash[HASH_BUF_SIZE]; sem_t mutex; } tip;
     // aggiornato dai node dopo appendChainBlock(). Appena esiste, si
-    // riscrivono SOLO minerReadTip e questa funzione per leggerlo: il
-    // resto del miner non cambia.
+    // riscrivono solo minerReadTip e questa funzione per leggerlo.
     return minerTipIndex > builtOnIndex;
 }
 
@@ -151,14 +141,10 @@ int minerBuildCandidate(SharedState *st, Block *candidate, uint64_t *builtOnInde
     strncpy(candidate->prev_hash, tipHash, HASH_BUF_SIZE - 1);
     candidate->nonce = 0;
 
-    // Politica di riempimento del blocco (vedi SCELTE.md §3): drena tutte
-    // le tx disponibili ORA nel pool, fino a MAX_TX_PER_BLOCK, con la get
-    // NON bloccante (txpoolTryget). Mai txpoolGet bloccante: bloccarsi qui
-    // impedirebbe di controllare abort/shutdown, violando il requisito di
-    // responsivita' del miner.
-    // Se il pool e' vuoto il candidato esce con tx_count == 0: non e' un
-    // errore, decide runMiner cosa farne (oggi: attesa breve e ricostruzione,
-    // niente blocchi vuoti in chain).
+    // Drena le tx disponibili ORA, fino a MAX_TX_PER_BLOCK, con la get non
+    // bloccante. Mai txpoolGet: bloccarsi qui impedirebbe di controllare
+    // abort e shutdown (vedi SCELTE.md §3). Se il pool e' vuoto il
+    // candidato esce con tx_count == 0 e decide runMiner cosa farne.
     Transaction tx;
     while (candidate->tx_count < MAX_TX_PER_BLOCK) {
         int getrc = txpoolTryget(st, &tx);
@@ -171,8 +157,8 @@ int minerBuildCandidate(SharedState *st, Block *candidate, uint64_t *builtOnInde
         candidate->tx[candidate->tx_count++] = tx;
     }
 
-    // La firma di calculateMerkleRoot() (Simon) vuole una stringa unica
-    // con le tx separate da "::", non un array: la costruiamo qui.
+    // calculateMerkleRoot() vuole le tx in una stringa unica separate da
+    // "::", non un array.
     char joined[MAX_TX_PER_BLOCK * TX_MAX_LEN + MAX_TX_PER_BLOCK * 2 + 1] = {0};
     size_t used = 0;
     for (uint32_t i = 0; i < candidate->tx_count; i++) {
@@ -180,14 +166,11 @@ int minerBuildCandidate(SharedState *st, Block *candidate, uint64_t *builtOnInde
                           candidate->tx[i].text,
                           (i + 1 < candidate->tx_count) ? "::" : "");
         if (n < 0 || (size_t)n >= sizeof(joined) - used) {
-            return MEMORY_ERROR; // non dovrebbe mai accadere con i limiti di shared_state.h
+            return MEMORY_ERROR; // non dovrebbe accadere con i limiti di shared_state.h
         }
         used += (size_t)n;
     }
 
-    // Se candidate->tx_count == 0, joined e' la stringa vuota: coerente con
-    // calculateMerkleRoot(), che in quel caso valorizza merkleRoot a
-    // sha256("").
     calculateMerkleRoot(joined, candidate->merkle_root);
 
     return SUCCESS;
@@ -203,10 +186,10 @@ int minerMineCandidate(SharedState *st, Block *candidate, uint64_t builtOnIndex)
 
     int minato = 0;
     while (!minato) {
-        // Sleep INTERROMPIBILE: N passi da 1s (N random 1..5), MAI un
-        // sleep(N) monolitico. Scelta di gruppo: check non-bloccante
-        // dello stato condiviso tra un passo e l'altro, non signal
-        // (async-signal-safety, vedi SCELTE.md).
+        // Sleep interrompibile: N passi da 1s (N random 1..5), mai un
+        // sleep(N) monolitico. Scelta di gruppo: check non bloccante dello
+        // stato condiviso fra un passo e l'altro, non signal (vedi
+        // SCELTE.md §1).
         int passi = 1 + (int)(random() % 5);
         for (int passo = 0; passo < passi; passo++) {
             sleep(1);
@@ -218,7 +201,7 @@ int minerMineCandidate(SharedState *st, Block *candidate, uint64_t builtOnIndex)
         if ((uint32_t)(random() % st->difficulty) == 0) {
             minato = 1;
         }
-        candidate->nonce++; // cosmetico: il proof-of-work e' finto
+        candidate->nonce++; // cosmetico: il proof-of-work e' simulato
 
         if (minerAbortRequested(st, builtOnIndex)) {
             return MINER_ABORTED;
@@ -233,10 +216,9 @@ int runMiner(SharedState *st, int minerId) {
         return PARSE_ERROR;
     }
 
-    // Seed per-processo: OBBLIGATORIO. I miner vengono fork()ati quasi
-    // nello stesso istante: senza XOR col pid, time(NULL) sarebbe
-    // identico per tutti e genererebbero la stessa sequenza di tentativi
-    // (vedi SCELTE.md).
+    // Seed per-processo: i miner nascono da fork() quasi nello stesso
+    // istante, senza lo XOR col pid genererebbero sequenze identiche
+    // (vedi SCELTE.md §4).
     srandom((unsigned int)(time(NULL) ^ getpid()));
 
     char logName[64];
@@ -248,32 +230,37 @@ int runMiner(SharedState *st, int minerId) {
 
     minerLog(log, minerId, "avviato, difficulty=%u", st->difficulty);
 
-    // Validata UNA VOLTA SOLA, prima del loop. La difficulty la fissa il
-    // bootstrapper e non cambia a runtime: scoprirla invalida dentro il
-    // loop (minerMineCandidate -> PARSE_ERROR -> continue) trasformerebbe
-    // il while in un busy-loop che brucia CPU e riempie il log senza mai
-    // progredire.
+    // Validata una volta sola: la difficulty la fissa il bootstrapper e non
+    // cambia a runtime. Scoprirla invalida dentro il loop ridurrebbe il
+    // while a un busy-loop che non progredisce mai.
     if (st->difficulty == 0) {
         minerLog(log, minerId, "difficulty non valida (0): il miner non parte");
         fclose(log);
         return PARSE_ERROR;
     }
 
+    int exitCode = SUCCESS;
+
     while (st->running) {
         Block candidate;
         uint64_t builtOnIndex;
 
         int rc = minerBuildCandidate(st, &candidate, &builtOnIndex);
+        if (rc == IPC_ERROR) {
+            // Canale IPC inutilizzabile (semafori gia' distrutti): riprovare
+            // significherebbe solo girare a vuoto.
+            minerLog(log, minerId, "canale IPC non disponibile, esco: %s", codesToString(rc));
+            exitCode = IPC_ERROR;
+            break;
+        }
         if (rc != SUCCESS) {
             minerLog(log, minerId, "errore costruzione candidato: %s", codesToString(rc));
+            sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
-        // Politica sui blocchi vuoti (vedi SCELTE.md §3): se il drain non
-        // ha trovato nessuna tx NON miniamo un blocco vuoto -- a sistema
-        // fermo (client lenti o gia' usciti) intaserebbe la chain di
-        // blocchi senza transazioni. Aspettiamo un attimo e ricostruiamo.
-        // L'attesa e' a passi da 100ms rileggendo st->running: max 1s di
-        // latenza sullo stop, quindi il miner resta responsivo.
+        // Niente blocchi vuoti in chain (vedi SCELTE.md §3): se il pool era
+        // vuoto aspettiamo a passi da 100ms rileggendo st->running, cosi'
+        // la latenza sullo stop resta sotto il secondo, e ricostruiamo.
         if (candidate.tx_count == 0) {
             for (int passo = 0; passo < 10 && st->running; passo++) {
                 sleepInterruptible(0.1);
@@ -288,15 +275,12 @@ int runMiner(SharedState *st, int minerId) {
         int result = minerMineCandidate(st, &candidate, builtOnIndex);
 
         if (result == MINER_ABORTED) {
-            // Shutdown in corso: NON reinseriamo. txpoolPut e' bloccante
-            // sul semaforo 'empty' e ipc.h non offre una variante
-            // non-bloccante o con timeout per il producer. Se il pool e'
-            // pieno mentre il sistema si ferma, nessuno lo drenera' piu':
-            // il reinserimento resterebbe appeso per sempre e il processo
-            // non terminerebbe. Le tx si perdono, ma stiamo comunque
-            // spegnendo tutto.
+            // Allo shutdown non reinseriamo: txpoolPut e' bloccante e a pool
+            // pieno, con i miner in uscita, nessuno lo drenerebbe piu': il
+            // processo non terminerebbe. Le tx si perdono, ma il sistema si
+            // sta fermando comunque.
             // TODO: confermare con Nicola -- con una txpoolTryput() o
-            // txpoolTimedput() in ipc.h potremmo tentare il reinserimento
+            // txpoolTimedput() in ipc.h il reinserimento sarebbe possibile
             // anche qui senza rischiare di restare appesi.
             if (!st->running) {
                 minerLog(log, minerId,
@@ -308,9 +292,8 @@ int runMiner(SharedState *st, int minerId) {
             minerLog(log, minerId,
                      "abort: cima avanzata, reinserisco %u tx nel pool",
                      candidate.tx_count);
-            // Le tx di un blocco abortito NON si perdono: tornano nel
-            // pool cosi' un altro miner (o questo, al prossimo giro) le
-            // puo' includere (vedi SCELTE.md).
+            // Le tx di un blocco abortito sono ancora valide: tornano nel
+            // pool invece di essere scartate (vedi SCELTE.md §2).
             for (uint32_t i = 0; i < candidate.tx_count; i++) {
                 int putrc = txpoolPut(st, &candidate.tx[i]);
                 if (putrc != SUCCESS) {
@@ -322,9 +305,8 @@ int runMiner(SharedState *st, int minerId) {
         }
 
         if (result != MINER_MINED) {
-            // es. PARSE_ERROR per difficulty == 0: non e' un blocco valido,
-            // non lo mandiamo ai node.
             minerLog(log, minerId, "errore durante il mining: %s", codesToString(result));
+            sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
 
@@ -332,19 +314,26 @@ int runMiner(SharedState *st, int minerId) {
                  (unsigned long long)candidate.index, (unsigned long long)candidate.nonce);
 
         int putrc = blockbufPut(st, &candidate);
+        if (putrc == IPC_ERROR) {
+            minerLog(log, minerId, "canale IPC non disponibile, esco: %s", codesToString(putrc));
+            exitCode = IPC_ERROR;
+            break;
+        }
         if (putrc != SUCCESS) {
             minerLog(log, minerId, "errore broadcast blocco ai node: %s", codesToString(putrc));
+            sleepInterruptible(ERROR_RETRY_SECONDS);
         } else {
             minerLog(log, minerId, "blocco index=%llu inviato ai node",
                      (unsigned long long)candidate.index);
-            // Il prossimo candidato va costruito SOPRA questo blocco:
-            // senza questo avanzamento rigenereremmo sempre lo stesso
-            // index con lo stesso prev_hash.
+            // Senza questo avanzamento il prossimo candidato rinascerebbe
+            // con lo stesso index e lo stesso prev_hash.
             minerAdvanceLocalTip(&candidate);
         }
     }
 
-    minerLog(log, minerId, "shutdown pulito (running=0)");
+    if (exitCode == SUCCESS) {
+        minerLog(log, minerId, "shutdown pulito (running=0)");
+    }
     fclose(log);
-    return SUCCESS;
+    return exitCode;
 }

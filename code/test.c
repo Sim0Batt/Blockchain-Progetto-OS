@@ -202,14 +202,23 @@ printf("--- TEST MERKLE ROOT ---\n");
     printf("\n");
 
     printf("--- TEST CLIENT: SEED PER-PROCESSO (sequenze diverse) ---\n");
-    // Simuliamo due "client" con PID diversi seedando random() con due valori
-    // diversi: e' esattamente lo scenario che srandom(time(NULL) ^ getpid())
-    // in runClient() previene dal far collassare a sequenza identica.
+    // Due seed diversi simulano due client con pid diversi: e' lo scenario
+    // che srandom(time(NULL) ^ getpid()) in runClient() garantisce.
     Transaction seqA[5], seqB[5];
+    int seqRc = SUCCESS;
     srandom(1111);
-    for (int i = 0; i < 5; i++) clientGenerateTransaction(&seqA[i]);
+    for (int i = 0; i < 5; i++) {
+        int genRc = clientGenerateTransaction(&seqA[i]);
+        if (genRc != SUCCESS) seqRc = genRc;
+    }
     srandom(2222);
-    for (int i = 0; i < 5; i++) clientGenerateTransaction(&seqB[i]);
+    for (int i = 0; i < 5; i++) {
+        int genRc = clientGenerateTransaction(&seqB[i]);
+        if (genRc != SUCCESS) seqRc = genRc;
+    }
+    if (seqRc != SUCCESS) {
+        printf("Generazione sequenze FALLITA: %s\n", codesToString(seqRc));
+    }
 
     int sequencesDiffer = 0;
     for (int i = 0; i < 5; i++) {
@@ -232,10 +241,8 @@ printf("--- TEST MERKLE ROOT ---\n");
         printf("Errore: memoria insufficiente per il test del miner\n");
     } else {
         memset(minerTestSt, 0, sizeof(SharedState));
-        // difficulty=1 rende il test deterministico (random() % 1 == 0 sempre):
-        // mina al primo tentativo, niente flakiness, tempo limitato a 1-5s di sleep.
-        // NOTA: dopo il refactor SharedState non ha piu' il campo height (la
-        // chain non e' condivisa): la cima la tiene il miner internamente.
+        // difficulty=1 rende il test deterministico (random() % 1 == 0
+        // sempre): mina al primo tentativo, senza flakiness.
         minerTestSt->difficulty = 1;
         minerTestSt->running = 1;
 
@@ -253,28 +260,22 @@ printf("--- TEST MERKLE ROOT ---\n");
     printf("\n");
 
     printf("--- TEST MINER: ABORT SU SHUTDOWN (fork + shared mmap) ---\n");
-    // ATTENZIONE (vedi SCELTE.md, "punti in sospeso"): questo test copriva
-    // l'abort su CIMA AVANZATA. Dopo il refactor che ha tolto la chain da
-    // SharedState, il miner non ha piu' modo di osservare la cima globale
-    // (chainHeight()/chainTopHash() rimosse, nessun canale node -> miner):
-    // quel caso NON e' testabile finche' Nicola non aggiunge il campo tip
-    // condiviso. Qui resta coperto l'altro motivo di abort, lo shutdown.
-    //
-    // Serve VERA memoria condivisa: con un fork() su memoria normale il
-    // figlio scriverebbe su una copia privata copy-on-write e il padre non
-    // vedrebbe mai il cambiamento.
+    // L'altro motivo di abort, la cima avanzata, non e' testabile finche'
+    // manca il canale node -> miner: vedi la nota architetturale in miner.h.
+    // Serve memoria realmente condivisa: su memoria normale il figlio
+    // scriverebbe su una copia copy-on-write, invisibile al padre.
     SharedState *abortSt = mmap(NULL, sizeof(SharedState), PROT_READ | PROT_WRITE,
                                  MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (abortSt == MAP_FAILED) {
         printf("Errore: mmap fallita per il test di abort\n");
     } else {
         memset(abortSt, 0, sizeof(SharedState));
-        abortSt->difficulty = 1000000; // alta apposta: non deve minare per caso durante il test
+        abortSt->difficulty = 1000000; // alta apposta: non deve minare per caso
         abortSt->running = 1;
 
         pid_t pid = fork();
         if (pid == 0) {
-            // Figlio: dopo un attimo richiede lo shutdown, come farebbe la CLI
+            // Richiede lo shutdown a meta' mining, come farebbe la CLI
             sleep(2);
             abortSt->running = 0;
             _exit(0);

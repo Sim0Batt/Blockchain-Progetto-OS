@@ -14,7 +14,7 @@
  * txFrequency = transazioni al secondo, deve essere > 0.
  * Gira finche' st->running non diventa 0. Logga su client-<PID>.log.
  * Ritorna SUCCESS o un error code da errors.h.
- * // TODO: confermare firma con Nicola (bootstrapper G) */
+ * TODO: confermare la firma con Nicola (bootstrapper, workstream G). */
 int runClient(SharedState *st, double txFrequency, int clientId);
 
 /* ---- Helper esposto SOLO per testabilita' (vedi test.c) --------------

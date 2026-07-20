@@ -14,7 +14,7 @@
 
 /* ================= Helper interni (non esposti in client.h) ============ */
 
-// Scrive una riga di log con timestamp leggibile, tipo "[2026-07-19 10:03:11] [client 2 pid 4821] messaggio"
+// Scrive una riga di log con timestamp, id del client e pid.
 static void clientLog(FILE *log, int clientId, const char *fmt, ...) {
     if (log == NULL) {
         return;
@@ -34,10 +34,15 @@ static void clientLog(FILE *log, int clientId, const char *fmt, ...) {
     va_end(args);
 
     fprintf(log, "\n");
-    fflush(log); // flush subito: vogliamo il log aggiornato anche se il processo viene ucciso
+    fflush(log); // il log deve restare leggibile anche se il processo viene ucciso
 }
 
-// nanosleep interrompibile da EINTR (signal di pause/resume, SIGCHLD, ...): riprende dal residuo
+/* Attesa dopo un errore transitorio, prima di riprovare. Serve a non
+ * riciclare il loop a CPU piena; resta abbastanza corta da non incidere
+ * sulla latenza dello shutdown. */
+#define ERROR_RETRY_SECONDS 0.1
+
+// nanosleep che riprende dal residuo se interrotto da un signal (EINTR).
 static void sleepInterruptible(double seconds) {
     if (seconds <= 0.0) {
         return;
@@ -59,7 +64,6 @@ int clientGenerateTransaction(Transaction *out) {
         return PARSE_ERROR;
     }
 
-    // Pool di nomi alfanumerici da cui pescare mittente/destinatario
     static const char *names[] = {
         "Alice", "Bob", "Charlie", "Dave", "Eve", "Frank",
         "Grace", "Heidi", "Ivan", "Judy", "Mallory", "Oscar"
@@ -72,12 +76,12 @@ int clientGenerateTransaction(Transaction *out) {
         receiverIdx = (int)(random() % nameCount);
     } while (receiverIdx == senderIdx); // evitiamo "Alice pays Alice ..."
 
-    int amount = 1 + (int)(random() % 1000); // importo in [1, 1000], mai 0 (rispetta [1-9][0-9]*)
+    int amount = 1 + (int)(random() % 1000); // mai 0: la regex vuole [1-9][0-9]*
 
     int n = snprintf(out->text, TX_MAX_LEN, "%s pays %s %d coins",
                       names[senderIdx], names[receiverIdx], amount);
     if (n < 0 || n >= TX_MAX_LEN) {
-        return MEMORY_ERROR; // non dovrebbe mai accadere con nomi fissi e TX_MAX_LEN=256
+        return MEMORY_ERROR; // non dovrebbe accadere con nomi fissi e TX_MAX_LEN=256
     }
 
     return SUCCESS;
@@ -88,16 +92,14 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
         return PARSE_ERROR;
     }
     if (txFrequency <= 0.0) {
-        // errors.h non ha un codice dedicato per "argomento non valido":
-        // riusiamo PARSE_ERROR, coerente con l'uso che ne fa gia' ipc.c
-        // per gli argomenti NULL.
+        // errors.h non ha un codice per "argomento non valido": riusiamo
+        // PARSE_ERROR, come gia' fa ipc.c per gli argomenti NULL.
         return PARSE_ERROR;
     }
 
-    // Seed per-processo: OBBLIGATORIO. Tutti i client vengono fork()ati
-    // quasi nello stesso istante: senza XOR col pid, time(NULL) sarebbe
-    // identico per tutti e genererebbero la stessa identica sequenza di
-    // transazioni (vedi SCELTE.md).
+    // Seed per-processo: i client nascono da fork() quasi nello stesso
+    // istante, senza lo XOR col pid genererebbero sequenze identiche
+    // (vedi SCELTE.md §6).
     srandom((unsigned int)(time(NULL) ^ getpid()));
 
     char logName[64];
@@ -111,42 +113,47 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
     clientLog(log, clientId, "avviato, frequenza=%.3f tx/s (intervallo=%.3fs)",
               txFrequency, intervalSeconds);
 
+    int exitCode = SUCCESS;
+
     while (st->running) {
         Transaction tx;
         int rc = clientGenerateTransaction(&tx);
         if (rc != SUCCESS) {
             clientLog(log, clientId, "errore generazione tx: %s", codesToString(rc));
+            sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
 
-        // Autocontrollo difensivo: generiamo gia' tx valide by construction,
-        // ma verifichiamo comunque contro la regex ufficiale (coordinata
-        // con Simon, workstream A) prima di sottometterla al pool.
+        // Le tx sono gia' valide per costruzione, ma le verifichiamo contro
+        // la regex ufficiale prima di sottometterle: difesa in profondita'.
         if (txIsValid(tx.text) != SUCCESS) {
             clientLog(log, clientId, "tx generata malformata, scartata: %s", tx.text);
+            sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
 
-        // txpoolPut e' bloccante se il pool e' pieno: e' backpressure
-        // corretta, il client aspetta e non perde transazioni. Nel caso
-        // normale va tenuta cosi'.
-        //
-        // PUNTO DI INTEGRAZIONE APERTO (TODO: confermare con Nicola).
-        // Allo shutdown pero' questa put puo' restare appesa per sempre:
-        // se il pool e' pieno e i miner sono gia' usciti, nessuno lo
-        // drenera' piu' e sem_wait(empty) non verra' mai sbloccata --
-        // il client ignora st->running perche' e' fermo DENTRO la put,
-        // non sul check del while. ipc.h oggi espone solo txpoolPut
-        // (bloccante) per il producer: txpoolTryget esiste per il
-        // consumer, ma non c'e' la simmetrica lato producer.
-        // Servirebbe una txpoolTimedput(st, &tx, timeoutMs) basata su
-        // sem_timedwait, da chiamare in un loop che rilegge st->running:
-        // manterrebbe la backpressure nel caso normale e garantirebbe la
-        // terminazione allo stop. Non la implemento qui per non
+        // Bloccante a pool pieno: e' backpressure corretta, il client
+        // aspetta invece di perdere transazioni.
+        // TODO: confermare con Nicola. Allo shutdown questa put puo'
+        // restare appesa indefinitamente: a pool pieno con i miner gia'
+        // usciti nessuno lo drena piu' e il client resta fermo dentro la
+        // put, dove non rilegge st->running. Servirebbe una
+        // txpoolTimedput() basata su sem_timedwait, da chiamare in un loop
+        // che ricontrolla st->running; non implementata qui per non
         // duplicare la logica dei semafori fuori da ipc.c.
         int putrc = txpoolPut(st, &tx);
+        if (putrc == IPC_ERROR) {
+            // Il canale non e' piu' utilizzabile: tipicamente i semafori sono
+            // gia' stati distrutti dallo shutdown. Riprovare vorrebbe dire
+            // girare a vuoto, quindi usciamo propagando l'errore.
+            clientLog(log, clientId, "canale IPC non disponibile, esco: %s",
+                      codesToString(putrc));
+            exitCode = IPC_ERROR;
+            break;
+        }
         if (putrc != SUCCESS) {
             clientLog(log, clientId, "errore sottomissione tx al pool: %s", codesToString(putrc));
+            sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
         clientLog(log, clientId, "sottomessa: %s", tx.text);
@@ -154,7 +161,9 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
         sleepInterruptible(intervalSeconds);
     }
 
-    clientLog(log, clientId, "shutdown pulito (running=0)");
+    if (exitCode == SUCCESS) {
+        clientLog(log, clientId, "shutdown pulito (running=0)");
+    }
     fclose(log);
-    return SUCCESS;
+    return exitCode;
 }
