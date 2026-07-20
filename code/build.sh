@@ -5,10 +5,18 @@ normal=$(tput sgr0)
 underline=$(tput smul)
 
 
+# FIXME: percorsi OpenSSL non portabili su Ubuntu (Homebrew/macOS-only).
+# Su Ubuntu 24.04 openssl/sha.h e libcrypto sono gia' nei path di sistema:
+# questi -I/-L non servono e possono far fallire lo script se la cartella
+# non esiste. Non e' compito del pezzo E/F (miner/client) sistemarlo:
+# segnalato a chi possiede il build (workstream X).
 CC="gcc"
 CFLAGS=(-Wall -Wextra -Wno-unused-parameter -g1 -Iutils -I/opt/homebrew/opt/openssl@3/include)
-SRCS=(blockchain.c utils/*.c encoding/*.c)
-TEST=(test.c utils/*.c encoding/*.c)
+# miner.c/client.c/ipc.c sono in root come blockchain.c/test.c: vanno
+# elencati esplicitamente (il glob utils/*.c non li vede). Tenere allineato
+# a SRCS/TEST_OBJS nel Makefile.
+SRCS=(blockchain.c miner.c client.c ipc.c utils/*.c encoding/*.c)
+TEST=(test.c miner.c client.c ipc.c utils/*.c encoding/*.c)
 
 LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib"
 

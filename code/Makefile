@@ -11,11 +11,22 @@ LDFLAGS := -pthread          # semafori POSIX (sem_*)
 LDLIBS  := -lrt -lcrypto              # shared memory POSIX (shm_open)
 
 # --- Sorgenti dell'eseguibile principale ---
-# node.c, miner.c, client.c, sha256.c si aggiungeranno da soli via wildcard.
-SRCS      := blockchain.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
+# node.c si aggiungera' da solo via wildcard quando arriva (workstream D).
+# miner.c/client.c/ipc.c sono in root come blockchain.c: il wildcard non li
+# vede, vanno elencati esplicitamente (workstream E/F). ipc.c (Nicola) non
+# era ancora referenziato da nessuna parte: e' emerso appena miner/client
+# hanno iniziato a chiamare le funzioni IPC (txpoolPut, chainHeight, ...).
+SRCS      := blockchain.c miner.c client.c ipc.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
 OBJS      := $(SRCS:.c=.o)
 
-UTIL_OBJS := $(patsubst %.c,%.o,$(wildcard utils/*.c))
+# Oggetti da linkare nel binario di test: tutto tranne blockchain.o, che ha
+# il main() dell'eseguibile principale e andrebbe in conflitto col main()
+# di test.c.
+# FIX: prima qui c'erano solo gli oggetti di utils/, mancavano quelli di
+# encoding/ (calculateSha256/calculateMerkleRoot/...) usati gia' da test.c:
+# il link di test_encoding falliva con undefined reference. Serviva anche
+# per poter linkare i nuovi test su miner/client (workstream E/F).
+TEST_OBJS := $(filter-out blockchain.o,$(OBJS))
 HDRS      := $(wildcard *.h) $(wildcard utils/*.h) $(wildcard encoding/*.h)
 
 # --- Eseguibili prodotti ---
@@ -43,7 +54,7 @@ run: build
 test: $(TEST_BIN)
 	./$(TEST_BIN)
 
-$(TEST_BIN): test.o $(UTIL_OBJS)
+$(TEST_BIN): test.o $(TEST_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:

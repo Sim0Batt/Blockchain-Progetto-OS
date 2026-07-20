@@ -5,8 +5,16 @@
 #include "encoding/crypto.h"
 #include "utils/csv_manager.h"
 #include "shared_state.h"
+#include "utils/tx.h"
+#include "miner.h"
+#include "client.h"
 
 #include <stdlib.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 
 int main(int argc, char *argv[]) {
 
@@ -57,6 +65,18 @@ int main(int argc, char *argv[]) {
 printf("--- TEST MERKLE ROOT ---\n");
     printf("Input transazioni: '%s'\n", genesisTx);
     printf("Merkle Root calcolata: %s\n", merkleOut);
+    // Vettore di verifica noto (fornito dal gruppo per la merkle root del genesis)
+    const char *expectedGenesisMerkle = "b815a93dd7f59058a27e63558ba5aa6445d851f316070ec13db673d5ab38e0cc";
+    if (strcmp(merkleOut, expectedGenesisMerkle) == 0) {
+        printf("Merkle Root Genesis: %s\n", codesToString(SUCCESS));
+    } else {
+        // NON e' compito nostro (workstream E/F) fixare calculateMerkleRoot: e' il
+        // modulo crypto di Simon (workstream A). Se questo test fallisce e il valore
+        // ottenuto e' "4e178110...", e' il bug noto del padding a singola tx: segnalarlo
+        // a Simon, non toccare encoding/crypto.c da qui.
+        printf("Merkle Root Genesis: MISMATCH (atteso %s, ottenuto %s) -> segnalare a Simon (workstream A)\n",
+               expectedGenesisMerkle, merkleOut);
+    }
     printf("\n");
 
     Block testBlock;
@@ -161,6 +181,113 @@ printf("--- TEST MERKLE ROOT ---\n");
     }
 
     free(original_ss); // Liberiamo la memoria Heap
+
+    /* ================= TEST CLIENT (workstream F) ================= */
+
+    printf("--- TEST CLIENT: GENERAZIONE TX VALIDE (100 tx) ---\n");
+    srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
+    int invalidCount = 0;
+    for (int i = 0; i < 100; i++) {
+        Transaction tx;
+        int gen_rc = clientGenerateTransaction(&tx);
+        if (gen_rc != SUCCESS || txIsValid(tx.text) != SUCCESS) {
+            invalidCount++;
+            printf("  tx #%d NON valida: '%s' (%s)\n", i, tx.text, codesToString(gen_rc));
+        }
+    }
+    printf("Transazioni non valide su 100: %d -> %s\n",
+           invalidCount, invalidCount == 0 ? codesToString(SUCCESS) : codesToString(INVALID_TRANSACTION));
+    printf("\n");
+
+    printf("--- TEST CLIENT: SEED PER-PROCESSO (sequenze diverse) ---\n");
+    // Simuliamo due "client" con PID diversi seedando random() con due valori
+    // diversi: e' esattamente lo scenario che srandom(time(NULL) ^ getpid())
+    // in runClient() previene dal far collassare a sequenza identica.
+    Transaction seqA[5], seqB[5];
+    srandom(1111);
+    for (int i = 0; i < 5; i++) clientGenerateTransaction(&seqA[i]);
+    srandom(2222);
+    for (int i = 0; i < 5; i++) clientGenerateTransaction(&seqB[i]);
+
+    int sequencesDiffer = 0;
+    for (int i = 0; i < 5; i++) {
+        if (strcmp(seqA[i].text, seqB[i].text) != 0) {
+            sequencesDiffer = 1;
+            break;
+        }
+    }
+    printf("Sequenza A[0]: %s\n", seqA[0].text);
+    printf("Sequenza B[0]: %s\n", seqB[0].text);
+    printf("Sequenze diverse con seed diversi: %s\n",
+           sequencesDiffer ? codesToString(SUCCESS) : "FALLITO (sequenze identiche)");
+    printf("\n");
+
+    /* ================= TEST MINER (workstream E) ================= */
+
+    printf("--- TEST MINER: MINING CON DIFFICULTY PICCOLA ---\n");
+    SharedState *minerTestSt = malloc(sizeof(SharedState));
+    if (minerTestSt == NULL) {
+        printf("Errore: memoria insufficiente per il test del miner\n");
+    } else {
+        memset(minerTestSt, 0, sizeof(SharedState));
+        // difficulty=1 rende il test deterministico (random() % 1 == 0 sempre):
+        // mina al primo tentativo, niente flakiness, tempo limitato a 1-5s di sleep.
+        minerTestSt->difficulty = 1;
+        minerTestSt->height = 5;
+        minerTestSt->running = 1;
+
+        Block candidate;
+        memset(&candidate, 0, sizeof(Block));
+        candidate.index = 5;
+
+        srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
+        int result = minerMineCandidate(minerTestSt, &candidate, 5);
+        printf("Esito mining (difficulty=1, builtOnIndex=height): %s\n",
+               result == MINER_MINED ? "MINER_MINED" : codesToString(result));
+        printf("Nonce dopo il mining: %llu\n", (unsigned long long)candidate.nonce);
+        free(minerTestSt);
+    }
+    printf("\n");
+
+    printf("--- TEST MINER: ABORT SU CAMBIO CIMA (fork + shared mmap) ---\n");
+    // minerShouldAbort()/chainHeight() leggono st->height senza lock: per far
+    // vedere al padre la scrittura del figlio serve VERA memoria condivisa
+    // (un fork() su memoria normale creerebbe una copia privata copy-on-write,
+    // il padre non vedrebbe mai il cambiamento). Simuliamo cosi' un secondo
+    // miner che vince la corsa e fa avanzare la cima mentre noi stiamo minando.
+    SharedState *abortSt = mmap(NULL, sizeof(SharedState), PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (abortSt == MAP_FAILED) {
+        printf("Errore: mmap fallita per il test di abort\n");
+    } else {
+        memset(abortSt, 0, sizeof(SharedState));
+        abortSt->difficulty = 1000000; // alta apposta: non deve minare per caso durante il test
+        abortSt->height = 5;
+        abortSt->running = 1;
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            // Figlio: dopo un attimo avanza la cima, come farebbe un altro miner vincente
+            sleep(2);
+            abortSt->height = 6;
+            _exit(0);
+        } else if (pid > 0) {
+            Block candidate2;
+            memset(&candidate2, 0, sizeof(Block));
+            candidate2.index = 5;
+
+            srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
+            int abortResult = minerMineCandidate(abortSt, &candidate2, 5);
+            waitpid(pid, NULL, 0);
+
+            printf("Esito mining con cima avanzata a meta' mining (atteso abort): %s\n",
+                   abortResult == MINER_ABORTED ? codesToString(SUCCESS) : "FALLITO (non ha abortito)");
+        } else {
+            printf("Errore: fork fallita per il test di abort\n");
+        }
+        munmap(abortSt, sizeof(SharedState));
+    }
+    printf("\n");
 
     return 0;
 }
