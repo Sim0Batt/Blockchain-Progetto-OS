@@ -17,6 +17,8 @@
 #include <sys/wait.h>
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
 
     char out[17];
 
@@ -30,7 +32,7 @@ int main(int argc, char *argv[]) {
     uint64_t valueOut;
     rc = hexToU64("0000000000001337", &valueOut);
     printf("Hex to U64 Exit Value: %s\n", codesToString(rc));
-    printf("U64: %llu\n", valueOut);
+    printf("U64: %llu\n", (unsigned long long)valueOut);
 
     // Bytes to Hex
     unsigned char testBytes[4] = {'t', 'e', 's', 't'};
@@ -106,13 +108,13 @@ printf("--- TEST MERKLE ROOT ---\n");
 
     printf("--- TEST CSV I/O E CHAIN VALIDATION ---\n");
 
-    // 1. Creiamo uno stato fittizio ALLOCANDOLO SULL'HEAP
-    SharedState *original_ss = malloc(sizeof(SharedState));
-    if (original_ss == NULL) {
-        printf("Errore: memoria Heap insufficiente per allocare original_ss!\n");
+    // 1. Creiamo una chain fittizia ALLOCANDOLA SULL'HEAP
+    Blockchain *originalChain = malloc(sizeof(Blockchain));
+    if (originalChain == NULL) {
+        printf("Errore: memoria Heap insufficiente per allocare originalChain!\n");
         return 1;
     }
-    memset(original_ss, 0, sizeof(SharedState));
+    memset(originalChain, 0, sizeof(Blockchain));
 
     // -- Creazione del Blocco Genesis (Indice 0) --
     Block b0;
@@ -124,8 +126,8 @@ printf("--- TEST MERKLE ROOT ---\n");
     calculateMerkleRoot("Genesis block", b0.merkle_root);
     strcpy(b0.tx[0].text, "Genesis block");
     b0.tx_count = 1;
-    original_ss->chain[0] = b0;
-    original_ss->height = 1;
+    originalChain->blocks[0] = b0;
+    originalChain->height = 1;
 
     // -- Creazione del Blocco 1 --
     Block b1;
@@ -138,36 +140,36 @@ printf("--- TEST MERKLE ROOT ---\n");
     strcpy(b1.tx[0].text, "Alice pays Bob 10 coins");
     strcpy(b1.tx[1].text, "Charlie pays Dave 5 coins");
     b1.tx_count = 2;
-    original_ss->chain[1] = b1;
-    original_ss->height = 2;
+    originalChain->blocks[1] = b1;
+    originalChain->height = 2;
 
     // 2. Salviamo lo stato sul file CSV
     const char *test_csv_file = "test_state.csv";
-    int save_rc = saveBlockchainCsv(original_ss, test_csv_file);
+    int save_rc = saveBlockchainCsv(originalChain, test_csv_file);
     printf("Salvataggio CSV (%s): %s\n", test_csv_file, codesToString(save_rc));
 
     if (save_rc == SUCCESS) {
-        // 3. Creiamo un nuovo stato vuoto ALLOCANDOLO SULL'HEAP
-        SharedState *loaded_ss = malloc(sizeof(SharedState));
-        if (loaded_ss == NULL) {
-            printf("Errore: memoria Heap insufficiente per allocare loaded_ss!\n");
-            free(original_ss);
+        // 3. Creiamo una nuova chain vuota ALLOCANDOLA SULL'HEAP
+        Blockchain *loadedChain = malloc(sizeof(Blockchain));
+        if (loadedChain == NULL) {
+            printf("Errore: memoria Heap insufficiente per allocare loadedChain!\n");
+            free(originalChain);
             return 1;
         }
-        memset(loaded_ss, 0, sizeof(SharedState));
+        memset(loadedChain, 0, sizeof(Blockchain));
 
         // 4. Carichiamo il file CSV
-        int load_rc = loadCsv(test_csv_file, loaded_ss);
+        int load_rc = loadCsv(test_csv_file, loadedChain);
         printf("Caricamento CSV (%s): %s\n\n", test_csv_file, codesToString(load_rc));
 
         if (load_rc == SUCCESS) {
             printf("--- RISULTATO DEL CARICAMENTO ---\n");
             printf("Altezza originale: %llu | Altezza caricata: %llu\n",
-                   (unsigned long long)original_ss->height, (unsigned long long)loaded_ss->height);
+                   (unsigned long long)originalChain->height, (unsigned long long)loadedChain->height);
 
             // 5. Verifichiamo i dati letti dal Blocco 1
-            if (loaded_ss->height >= 2) {
-                Block loaded_b1 = loaded_ss->chain[1];
+            if (loadedChain->height >= 2) {
+                Block loaded_b1 = loadedChain->blocks[1];
                 printf("\nDati del Blocco 1 caricato:\n");
                 printf(" - Index: %llu\n", (unsigned long long)loaded_b1.index);
                 printf(" - Prev Hash: %s\n", loaded_b1.prev_hash);
@@ -177,10 +179,10 @@ printf("--- TEST MERKLE ROOT ---\n");
                 }
             }
         }
-        free(loaded_ss); // Liberiamo la memoria Heap
+        free(loadedChain); // Liberiamo la memoria Heap
     }
 
-    free(original_ss); // Liberiamo la memoria Heap
+    free(originalChain); // Liberiamo la memoria Heap
 
     /* ================= TEST CLIENT (workstream F) ================= */
 
@@ -232,29 +234,35 @@ printf("--- TEST MERKLE ROOT ---\n");
         memset(minerTestSt, 0, sizeof(SharedState));
         // difficulty=1 rende il test deterministico (random() % 1 == 0 sempre):
         // mina al primo tentativo, niente flakiness, tempo limitato a 1-5s di sleep.
+        // NOTA: dopo il refactor SharedState non ha piu' il campo height (la
+        // chain non e' condivisa): la cima la tiene il miner internamente.
         minerTestSt->difficulty = 1;
-        minerTestSt->height = 5;
         minerTestSt->running = 1;
 
         Block candidate;
         memset(&candidate, 0, sizeof(Block));
-        candidate.index = 5;
+        candidate.index = 0;
 
         srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
-        int result = minerMineCandidate(minerTestSt, &candidate, 5);
-        printf("Esito mining (difficulty=1, builtOnIndex=height): %s\n",
+        int result = minerMineCandidate(minerTestSt, &candidate, 0);
+        printf("Esito mining (difficulty=1, cima non avanzata): %s\n",
                result == MINER_MINED ? "MINER_MINED" : codesToString(result));
         printf("Nonce dopo il mining: %llu\n", (unsigned long long)candidate.nonce);
         free(minerTestSt);
     }
     printf("\n");
 
-    printf("--- TEST MINER: ABORT SU CAMBIO CIMA (fork + shared mmap) ---\n");
-    // minerShouldAbort()/chainHeight() leggono st->height senza lock: per far
-    // vedere al padre la scrittura del figlio serve VERA memoria condivisa
-    // (un fork() su memoria normale creerebbe una copia privata copy-on-write,
-    // il padre non vedrebbe mai il cambiamento). Simuliamo cosi' un secondo
-    // miner che vince la corsa e fa avanzare la cima mentre noi stiamo minando.
+    printf("--- TEST MINER: ABORT SU SHUTDOWN (fork + shared mmap) ---\n");
+    // ATTENZIONE (vedi SCELTE.md, "punti in sospeso"): questo test copriva
+    // l'abort su CIMA AVANZATA. Dopo il refactor che ha tolto la chain da
+    // SharedState, il miner non ha piu' modo di osservare la cima globale
+    // (chainHeight()/chainTopHash() rimosse, nessun canale node -> miner):
+    // quel caso NON e' testabile finche' Nicola non aggiunge il campo tip
+    // condiviso. Qui resta coperto l'altro motivo di abort, lo shutdown.
+    //
+    // Serve VERA memoria condivisa: con un fork() su memoria normale il
+    // figlio scriverebbe su una copia privata copy-on-write e il padre non
+    // vedrebbe mai il cambiamento.
     SharedState *abortSt = mmap(NULL, sizeof(SharedState), PROT_READ | PROT_WRITE,
                                  MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (abortSt == MAP_FAILED) {
@@ -262,25 +270,24 @@ printf("--- TEST MERKLE ROOT ---\n");
     } else {
         memset(abortSt, 0, sizeof(SharedState));
         abortSt->difficulty = 1000000; // alta apposta: non deve minare per caso durante il test
-        abortSt->height = 5;
         abortSt->running = 1;
 
         pid_t pid = fork();
         if (pid == 0) {
-            // Figlio: dopo un attimo avanza la cima, come farebbe un altro miner vincente
+            // Figlio: dopo un attimo richiede lo shutdown, come farebbe la CLI
             sleep(2);
-            abortSt->height = 6;
+            abortSt->running = 0;
             _exit(0);
         } else if (pid > 0) {
             Block candidate2;
             memset(&candidate2, 0, sizeof(Block));
-            candidate2.index = 5;
+            candidate2.index = 0;
 
             srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
-            int abortResult = minerMineCandidate(abortSt, &candidate2, 5);
+            int abortResult = minerMineCandidate(abortSt, &candidate2, 0);
             waitpid(pid, NULL, 0);
 
-            printf("Esito mining con cima avanzata a meta' mining (atteso abort): %s\n",
+            printf("Esito mining con shutdown a meta' mining (atteso abort): %s\n",
                    abortResult == MINER_ABORTED ? codesToString(SUCCESS) : "FALLITO (non ha abortito)");
         } else {
             printf("Errore: fork fallita per il test di abort\n");

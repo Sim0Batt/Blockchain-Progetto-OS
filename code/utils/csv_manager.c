@@ -10,14 +10,14 @@
 #include "../encoding/encoding.h"
 
 // Funzione per salvare la blockchain sul file CSV
-int saveBlockchainCsv(const SharedState *ss, const char *filename) {
+int saveBlockchainCsv(const Blockchain *chain, const char *filename) {
     FILE *file = fopen(filename, "w");
 
     if (!file) return IO_ERROR;
 
     fprintf(file, "index, timestamp, prev_hash, merkle_root, nonce, transactions\n");
 
-    uint64_t height = ss->height;
+    uint64_t height = chain->height;
 
     for (uint64_t i = 0; i < height; i++) {
 
@@ -26,7 +26,7 @@ int saveBlockchainCsv(const SharedState *ss, const char *filename) {
          * richiesti index, timestamp, previous_hash, merkle_root, nonce. Dopo i 5 parametri
          * mettiamo le transizione hashate separate da :: come richiesto.
          */
-        const Block current = ss->chain[i];
+        const Block current = chain->blocks[i];
 
         char indexHex[HEX_U64_BUF_SIZE];
         char nonceHex[HEX_U64_BUF_SIZE];
@@ -56,7 +56,7 @@ int saveBlockchainCsv(const SharedState *ss, const char *filename) {
 }
 
 // Funzione per caricare in shared memory il file CSV con i vari blocchi e le relative transazioni
-int loadCsv(const char *filename, SharedState *ss) {
+int loadCsv(const char *filename, Blockchain *chain) {
     FILE *file = fopen(filename, "r");
 
     if (!file) return IO_ERROR;
@@ -68,7 +68,7 @@ int loadCsv(const char *filename, SharedState *ss) {
         return IO_ERROR;
     }
 
-    ss->height = 0;
+    chain->height = 0;
 
     while (fgets(line, sizeof(line), file)) {
         Block tmp;
@@ -123,15 +123,15 @@ int loadCsv(const char *filename, SharedState *ss) {
             }
         }
 
-        // Accodiamo il singolo blocco parsato alla shared memory
-        if (ss->height > 0) {
-            if (validateBlock(&ss->chain[ss->height - 1], &tmp) != SUCCESS) {
+        // Accodiamo il singolo blocco parsato alla chain
+        if (chain->height > 0) {
+            if (validateBlock(&chain->blocks[chain->height - 1], &tmp) != SUCCESS) {
                 fclose(file);
                 return CHAIN_MISMATCH;
             }
         }
 
-        ss->chain[ss->height++] = tmp;
+        chain->blocks[chain->height++] = tmp;
     }
     fclose(file);
     return SUCCESS;

@@ -1,6 +1,5 @@
 #include "ipc.h"
 #include "utils/errors.h"
-#include "encoding/crypto.h"
 
 #include <fcntl.h>    /* O_CREAT, O_RDWR            */
 #include <sys/mman.h> /* shm_open, mmap, PROT_*, MAP_* */
@@ -45,7 +44,6 @@ SharedState *ipcCreate(uint32_t difficulty) {
         return NULL;
     }
     memset(st, 0, sizeof(SharedState));
-    st->height = 0;
     st->difficulty = difficulty;
     st->running = 1;
     if (sem_init(&st->tx_pool.empty, 1, TX_POOL_CAP) == -1 ||
@@ -53,8 +51,7 @@ SharedState *ipcCreate(uint32_t difficulty) {
         sem_init(&st->tx_pool.mutex, 1, 1) == -1 ||
         sem_init(&st->block_buf.empty, 1, BLOCK_BUF_CAP) == -1 ||
         sem_init(&st->block_buf.full, 1, 0) == -1 ||
-        sem_init(&st->block_buf.mutex, 1, 1) == -1 ||
-        sem_init(&st->chain_mutex, 1, 1) == -1) {
+        sem_init(&st->block_buf.mutex, 1, 1) == -1) {
         perror("ipcCreate: sem_init");
         munmap(st, sizeof(SharedState));
         shm_unlink(SHM_NAME);
@@ -73,7 +70,6 @@ void ipcDestroy(SharedState *st) {
     sem_destroy(&st->block_buf.empty);
     sem_destroy(&st->block_buf.full);
     sem_destroy(&st->block_buf.mutex);
-    sem_destroy(&st->chain_mutex);
     munmap(st, sizeof(SharedState));
     shm_unlink(SHM_NAME);
 }
@@ -155,48 +151,5 @@ int blockbufGet(SharedState *st, Block *out) {
     st->block_buf.head = (st->block_buf.head + 1) % BLOCK_BUF_CAP;
     sem_post(&st->block_buf.mutex);
     sem_post(&st->block_buf.empty);
-    return SUCCESS;
-}
-
-/* ==================== Chain: le tre letture ==================== */
-
-/* Lettura ottimistica dell'altezza, SENZA lock (read atomica di uint64_t
- * su x86-64). Un valore stale costa al massimo un ciclo di mining sprecato. */
-uint64_t chainHeight(SharedState *st) {
-    if (st == NULL) {
-        return 0;
-    }
-    return st->height;
-}
-
-/* Copia il blocco di indice 'index'. Sotto lock: deve essere consistente
- * (un append concorrente non deve farci leggere dati parziali). */
-int chainGetBlock(SharedState *st, uint64_t index, Block *out) {
-    if (st == NULL || out == NULL) {
-        return PARSE_ERROR;
-    }
-    semWaitSafe(&st->chain_mutex);
-    if (index >= st->height) {
-        sem_post(&st->chain_mutex);
-        return BLOCK_NOT_FOUND;
-    }
-    *out = st->chain[index];
-    sem_post(&st->chain_mutex);
-    return SUCCESS;
-}
-
-/* Hash del blocco in cima (serve al miner per il prev_hash del prossimo
- * blocco). Sotto lock. Ritorna BLOCK_NOT_FOUND se la chain e' vuota. */
-int chainTopHash(SharedState *st, char out[HASH_BUF_SIZE]) {
-    if (st == NULL || out == NULL) {
-        return PARSE_ERROR;
-    }
-    semWaitSafe(&st->chain_mutex);
-    if (st->height == 0) {
-        sem_post(&st->chain_mutex);
-        return BLOCK_NOT_FOUND; /* chain vuota, nessuna cima */
-    }
-    calculateBlockHash(&st->chain[st->height - 1], out);
-    sem_post(&st->chain_mutex);
     return SUCCESS;
 }

@@ -13,19 +13,18 @@ LDLIBS  := -lrt -lcrypto              # shared memory POSIX (shm_open)
 # --- Sorgenti dell'eseguibile principale ---
 # node.c si aggiungera' da solo via wildcard quando arriva (workstream D).
 # miner.c/client.c/ipc.c sono in root come blockchain.c: il wildcard non li
-# vede, vanno elencati esplicitamente (workstream E/F). ipc.c (Nicola) non
-# era ancora referenziato da nessuna parte: e' emerso appena miner/client
-# hanno iniziato a chiamare le funzioni IPC (txpoolPut, chainHeight, ...).
+# vede, vanno elencati esplicitamente (workstream E/F).
 SRCS      := blockchain.c miner.c client.c ipc.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
 OBJS      := $(SRCS:.c=.o)
 
 # Oggetti da linkare nel binario di test: tutto tranne blockchain.o, che ha
 # il main() dell'eseguibile principale e andrebbe in conflitto col main()
 # di test.c.
-# FIX: prima qui c'erano solo gli oggetti di utils/, mancavano quelli di
-# encoding/ (calculateSha256/calculateMerkleRoot/...) usati gia' da test.c:
-# il link di test_encoding falliva con undefined reference. Serviva anche
-# per poter linkare i nuovi test su miner/client (workstream E/F).
+# MERGE: sostituisce UTIL_OBJS/ENC_OBJS introdotti nel refactor. Stesso
+# intento (linkare anche gli oggetti di encoding/, che mancavano e facevano
+# fallire il link di test_encoding con undefined reference), ma derivato da
+# OBJS: cosi' include anche miner.o/client.o/ipc.o, necessari ai test dei
+# workstream E/F, e resta allineato da solo se SRCS cambia.
 TEST_OBJS := $(filter-out blockchain.o,$(OBJS))
 HDRS      := $(wildcard *.h) $(wildcard utils/*.h) $(wildcard encoding/*.h)
 

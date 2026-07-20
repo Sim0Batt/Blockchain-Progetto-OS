@@ -28,24 +28,32 @@ int runMiner(SharedState *st, int minerId);
  * in isolamento (mining con difficulty piccola, abort su cambio cima)
  * senza dover far girare un intero processo miner. */
 
-/* Legge la cima corrente della chain su cui costruire il prossimo blocco:
+/* Legge la cima corrente su cui costruire il prossimo blocco:
  * 'tipIndex' = indice del prossimo blocco (== altezza corrente della
  * chain), 'tipHash' = hash del blocco in cima (prev_hash del candidato).
+ * Ritorna SUCCESS, oppure un error code da errors.h.
  *
- * STUB/WRAPPER (vedi §1 del task E/F): il prof ha vietato la chain
- * condivisa globale (mandato del 13/07): ogni node dovra' tenere una
- * copia locale e i blocchi si propagano via IPC. Il refactor di Nicola
- * che toglie chain[] da SharedState NON e' ancora arrivato: oggi questo
- * wrapper si appoggia a chainHeight()/chainTopHash() (ipc.h), che leggono
- * ancora st->chain/st->height. Quando il refactor arriva, si riscrive
- * SOLO questa funzione (es. leggendo da un messaggio/canale IPC invece
- * che dalla chain condivisa): il resto del miner non si tocca.
- * Ritorna SUCCESS, oppure un error code da errors.h. */
+ * NOTA ARCHITETTURALE (post-refactor, da chiudere con Nicola).
+ * Il refactor ha tolto la chain da SharedState: ogni node ne tiene una
+ * copia locale e i blocchi viaggiano via IPC. Con essa sono sparite anche
+ * chainHeight()/chainTopHash(), che erano il modo con cui il miner
+ * leggeva la cima -- e NON e' stato introdotto nulla al loro posto:
+ * SharedState oggi contiene solo i due bounded buffer, difficulty e
+ * running, e block_buf va in un solo verso (miner -> node).
+ *
+ * Conseguenza: questi due wrapper si appoggiano a una cima LOCALE al
+ * processo miner, che avanza solo quando e' questo miner a produrre un
+ * blocco. Basta per costruire candidati concatenati correttamente, ma
+ * NON per accorgersi che un altro miner ha vinto la corsa: il requisito
+ * "abort su blocco nuovo" (README, workstream E) resta scoperto finche'
+ * non esiste un canale node -> miner con la cima corrente.
+ * Dettagli e forma proposta del campo condiviso: vedi il TODO dentro
+ * minerShouldAbort in miner.c. */
 int minerReadTip(SharedState *st, uint64_t *tipIndex, char tipHash[HASH_BUF_SIZE]);
 
 /* Ritorna 1 se il lavoro costruito su 'builtOnIndex' e' diventato stale
  * (la cima e' avanzata rispetto a quando abbiamo iniziato), 0 altrimenti.
- * STUB/WRAPPER: stessa nota di minerReadTip qui sopra. */
+ * Stessa nota architetturale di minerReadTip qui sopra. */
 int minerShouldAbort(SharedState *st, uint64_t builtOnIndex);
 
 /* Costruisce il blocco candidato: tip corrente (minerReadTip) + drain del

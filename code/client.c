@@ -128,7 +128,22 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
         }
 
         // txpoolPut e' bloccante se il pool e' pieno: e' backpressure
-        // corretta, il client aspetta e non perde transazioni.
+        // corretta, il client aspetta e non perde transazioni. Nel caso
+        // normale va tenuta cosi'.
+        //
+        // PUNTO DI INTEGRAZIONE APERTO (TODO: confermare con Nicola).
+        // Allo shutdown pero' questa put puo' restare appesa per sempre:
+        // se il pool e' pieno e i miner sono gia' usciti, nessuno lo
+        // drenera' piu' e sem_wait(empty) non verra' mai sbloccata --
+        // il client ignora st->running perche' e' fermo DENTRO la put,
+        // non sul check del while. ipc.h oggi espone solo txpoolPut
+        // (bloccante) per il producer: txpoolTryget esiste per il
+        // consumer, ma non c'e' la simmetrica lato producer.
+        // Servirebbe una txpoolTimedput(st, &tx, timeoutMs) basata su
+        // sem_timedwait, da chiamare in un loop che rilegge st->running:
+        // manterrebbe la backpressure nel caso normale e garantirebbe la
+        // terminazione allo stop. Non la implemento qui per non
+        // duplicare la logica dei semafori fuori da ipc.c.
         int putrc = txpoolPut(st, &tx);
         if (putrc != SUCCESS) {
             clientLog(log, clientId, "errore sottomissione tx al pool: %s", codesToString(putrc));
