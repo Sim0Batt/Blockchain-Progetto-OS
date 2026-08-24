@@ -22,7 +22,7 @@
 /* Crea il segmento, lo mappa, azzera i buffer e inizializza i 6 semafori
  * (pshared=1). Va chiamata UNA volta dal padre PRIMA di fork().
  * Ritorna il puntatore mappato, oppure NULL su errore. */
-SharedState *ipcCreate(uint32_t difficulty);
+SharedState *ipcCreate(uint32_t difficulty, uint32_t num_nodes);
 
 /* Smappa e rimuove il segmento: sem_destroy + munmap + shm_unlink.
  * Chiamata dal padre allo shutdown. */
@@ -41,12 +41,16 @@ int txpoolGet(SharedState *st, Transaction *out);
  * subito IPC_EMPTY. Il miner lo usa per "drenare" le tx gia' presenti. */
 int txpoolTryget(SharedState *st, Transaction *out);
 
-/* ---------------- Bounded buffer blocchi (miner -> node) -------------- */
+/* ---------------- Inbox per-node (miner/peer -> node) ----------------- */
 
-/* Producer (miner): consegna un blocco minato. Bloccante se pieno. */
-int blockbufPut(SharedState *st, const Block *blk);
+/* Consegna un blocco all'inbox del node 'nodeId'. Bloccante se piena. */
+int inboxPut(SharedState *st, uint32_t nodeId, const Block *blk);
 
-/* Consumer (node): preleva un blocco da validare. Bloccante se vuoto. */
-int blockbufGet(SharedState *st, Block *out);
+/* Il node 'nodeId' preleva un blocco dalla SUA inbox. Bloccante se vuota. */
+int inboxGet(SharedState *st, uint32_t nodeId, Block *out);
+
+/* Invia il blocco a tutte le inbox attive tranne 'exclude'
+ * (-1 = tutte, nodeId = tutte tranne se stesso). */
+int inboxBroadcast(SharedState *st, const Block *blk, int exclude);
 
 #endif /* IPC_H */

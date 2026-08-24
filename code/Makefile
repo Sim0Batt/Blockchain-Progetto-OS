@@ -12,7 +12,7 @@ LDLIBS  := -lrt -lcrypto              # shared memory POSIX (shm_open)
 
 # --- Sorgenti dell'eseguibile principale ---
 # node.c, miner.c, client.c, sha256.c si aggiungeranno da soli via wildcard.
-SRCS      := blockchain.c ipc.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
+SRCS      := blockchain.c ipc.c node.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
 OBJS      := $(SRCS:.c=.o)
 
 UTIL_OBJS := $(patsubst %.c,%.o,$(wildcard utils/*.c))
