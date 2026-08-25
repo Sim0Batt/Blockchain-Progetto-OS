@@ -1,6 +1,7 @@
 #include "node.h"
 #include "ipc.h"
 #include "utils/errors.h"
+#include "encoding/crypto.h"
 #include <string.h>
 #include <unistd.h>
 
@@ -8,6 +9,10 @@ int nodeHandleBlock(SharedState *st, uint32_t nodeId, Blockchain *chain, const B
     uint64_t before = chain->height;
     int rc = appendChainBlock(chain, blk);
     if (rc == SUCCESS) {
+        /* pubblica la propria testa: il miner attaccato a questo node la legge */
+        char topHash[HASH_BUF_SIZE];
+        calculateBlockHash(&chain->blocks[chain->height - 1], topHash);
+        nodePublishHead(st, nodeId, chain->height, topHash);
         if (log) fprintf(log, "node %u: appended index=%llu (height %llu->%llu), propagating\n",
                          nodeId, (unsigned long long)blk->index,
                          (unsigned long long)before, (unsigned long long)chain->height);
