@@ -46,10 +46,21 @@ typedef struct {
     sem_t empty, full, mutex;
 } NodeInbox;
 
+/* La "testa" pubblicata da un node: dove un miner attaccato a questo node si
+ * aggancia. NON e' la chain (2 campi), e' coordinamento best-effort.
+ * PER-NODE: ogni node scrive solo la propria casella -> nessuno stato globale
+ * della chain, coerente col vincolo "ogni node ha la sua copia". */
+typedef struct {
+    uint64_t height;                   /* altezza della copia locale del node */
+    char     lastHash[HASH_BUF_SIZE];  /* hash del blocco in cima             */
+    sem_t    mutex;
+} NodeHead;
+
 /* Stato CONDIVISO: solo canali di comunicazione. NIENTE chain. */
 typedef struct {
     TxPool       tx_pool;               /* client -> miner            */
     NodeInbox    inboxes[MAX_NODES];    /* miner/peer -> node         */
+    NodeHead     heads[MAX_NODES];      /* node -> miner (coordinamento) */
     uint32_t     num_nodes;             /* node attivi (<= MAX_NODES) */
     uint32_t     difficulty;
     volatile int running;

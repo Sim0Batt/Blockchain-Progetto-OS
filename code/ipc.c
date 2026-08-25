@@ -7,6 +7,7 @@
 #include <string.h>   /* memset                    */
 #include <stdio.h>    /* perror                    */
 #include <errno.h>    /* errno, EINTR              */
+#include <time.h>     /* clock_gettime, timespec   */
 
 /* ---- Helper interno ---- */
 
@@ -41,6 +42,7 @@ SharedState *ipcCreate(uint32_t difficulty, uint32_t num_nodes) {
         sem_init(&st->inboxes[i].empty, 1, NODE_INBOX_CAP);
         sem_init(&st->inboxes[i].full, 1, 0);
         sem_init(&st->inboxes[i].mutex, 1, 1);
+        sem_init(&st->heads[i].mutex, 1, 1);
     }
     return st;
 }
@@ -54,6 +56,7 @@ void ipcDestroy(SharedState *st) {
         sem_destroy(&st->inboxes[i].empty);
         sem_destroy(&st->inboxes[i].full);
         sem_destroy(&st->inboxes[i].mutex);
+        sem_destroy(&st->heads[i].mutex);
     }
     munmap(st, sizeof(SharedState));
     shm_unlink(SHM_NAME);
@@ -135,15 +138,80 @@ int inboxGet(SharedState *st, uint32_t nodeId, Block *out) {
     return SUCCESS;
 }
 
-/* Invia il blocco a tutte le inbox attive tranne 'exclude'.
- * exclude = -1     -> tutte (broadcast del miner).
- * exclude = nodeId -> tutte tranne se stesso (propagazione ai peer). */
+/* Variante NON bloccante di inboxPut: se l'inbox del peer e' piena ritorna
+ * subito IPC_ERROR invece di bloccare. Usata dalla propagazione per evitare
+ * stalli circolari (un node che propaga non deve bloccarsi: smetterebbe di
+ * consumare la propria inbox). */
+int inboxTryput(SharedState *st, uint32_t nodeId, const Block *blk) {
+    if (st == NULL || blk == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
+    NodeInbox *ib = &st->inboxes[nodeId];
+    if (sem_trywait(&ib->empty) == -1) return IPC_ERROR;  /* piena: salta */
+    semWaitSafe(&ib->mutex);
+    ib->slots[ib->tail] = *blk;
+    ib->tail = (ib->tail + 1) % NODE_INBOX_CAP;
+    sem_post(&ib->mutex);
+    sem_post(&ib->full);
+    return SUCCESS;
+}
+
+/* Broadcast non bloccante: salta i peer con inbox piena (best-effort).
+ * La mancata consegna a un peer saturo non e' fatale: il blocco gli
+ * arrivera' da un altro percorso di propagazione. */
 int inboxBroadcast(SharedState *st, const Block *blk, int exclude) {
     if (st == NULL || blk == NULL) return PARSE_ERROR;
     for (uint32_t i = 0; i < st->num_nodes; i++) {
         if ((int)i == exclude) continue;
-        int rc = inboxPut(st, i, blk);
-        if (rc != SUCCESS) return rc;
+        inboxTryput(st, i, blk);
     }
+    return SUCCESS;
+}
+
+/* ===== Coordinamento node -> miner (NodeHead per-node) ===== */
+
+int nodePublishHead(SharedState *st, uint32_t nodeId, uint64_t height, const char *lastHash) {
+    if (st == NULL || lastHash == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
+    NodeHead *h = &st->heads[nodeId];
+    semWaitSafe(&h->mutex);
+    h->height = height;
+    strncpy(h->lastHash, lastHash, HASH_BUF_SIZE - 1);
+    h->lastHash[HASH_BUF_SIZE - 1] = '\0';
+    sem_post(&h->mutex);
+    return SUCCESS;
+}
+
+int minerReadTip(SharedState *st, uint32_t nodeId, uint64_t *height, char prevHash[HASH_BUF_SIZE]) {
+    if (st == NULL || height == NULL || prevHash == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
+    NodeHead *h = &st->heads[nodeId];
+    semWaitSafe(&h->mutex);
+    *height = h->height;
+    memcpy(prevHash, h->lastHash, HASH_BUF_SIZE);
+    sem_post(&h->mutex);
+    return SUCCESS;
+}
+
+int minerShouldAbort(SharedState *st, uint32_t nodeId, uint64_t builtOnIndex) {
+    if (st == NULL || nodeId >= st->num_nodes) return 0;
+    NodeHead *h = &st->heads[nodeId];
+    semWaitSafe(&h->mutex);
+    uint64_t cur = h->height;
+    sem_post(&h->mutex);
+    return cur > builtOnIndex;
+}
+
+int txpoolTimedput(SharedState *st, const Transaction *tx, unsigned int timeoutMs) {
+    if (st == NULL || tx == NULL) return PARSE_ERROR;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec  += timeoutMs / 1000;
+    ts.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    int r;
+    do { r = sem_timedwait(&st->tx_pool.empty, &ts); } while (r == -1 && errno == EINTR);
+    if (r == -1) return IPC_ERROR;   /* timeout scaduto */
+    semWaitSafe(&st->tx_pool.mutex);
+    st->tx_pool.slots[st->tx_pool.tail] = *tx;
+    st->tx_pool.tail = (st->tx_pool.tail + 1) % TX_POOL_CAP;
+    sem_post(&st->tx_pool.mutex);
+    sem_post(&st->tx_pool.full);
     return SUCCESS;
 }

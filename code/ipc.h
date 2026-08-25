@@ -53,4 +53,10 @@ int inboxGet(SharedState *st, uint32_t nodeId, Block *out);
  * (-1 = tutte, nodeId = tutte tranne se stesso). */
 int inboxBroadcast(SharedState *st, const Block *blk, int exclude);
 
+int txpoolTimedput(SharedState *st, const Transaction *tx, unsigned int timeoutMs);
+int inboxTryput(SharedState *st, uint32_t nodeId, const Block *blk);
+int nodePublishHead(SharedState *st, uint32_t nodeId, uint64_t height, const char *lastHash);
+int minerReadTip(SharedState *st, uint32_t nodeId, uint64_t *height, char prevHash[HASH_BUF_SIZE]);
+int minerShouldAbort(SharedState *st, uint32_t nodeId, uint64_t builtOnIndex);
+
 #endif /* IPC_H */
