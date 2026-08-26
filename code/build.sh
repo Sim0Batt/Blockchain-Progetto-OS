@@ -7,8 +7,8 @@ underline=$(tput smul)
 
 CC="gcc"
 CFLAGS=(-Wall -Wextra -Wno-unused-parameter -g1 -Iutils -I/opt/homebrew/opt/openssl@3/include)
-SRCS=(blockchain.c ipc.c utils/*.c encoding/*.c)
-TEST=(test.c utils/*.c encoding/*.c)
+SRCS=(blockchain.c ipc.c node.c miner.c client.c utils/*.c encoding/*.c)
+TEST=(test.c miner.c client.c ipc.c utils/*.c encoding/*.c)
 
 LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib"
 

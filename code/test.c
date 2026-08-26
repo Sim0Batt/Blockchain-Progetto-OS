@@ -5,8 +5,18 @@
 #include "encoding/crypto.h"
 #include "utils/csv_manager.h"
 #include "shared_state.h"
+#include "ipc.h"
+#include "utils/tx.h"
+#include "miner.h"
+#include "client.h"
 
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 
 int main(int argc, char *argv[]) {
     (void)argc;
@@ -163,6 +173,156 @@ printf("--- TEST MERKLE ROOT ---\n");
     }
 
     free(originalChain); // Liberiamo la memoria Heap
+
+    /* ================= TEST CLIENT (workstream F) ================= */
+
+    printf("--- TEST CLIENT: GENERAZIONE TX VALIDE (100 tx) ---\n");
+    srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
+    int invalidCount = 0;
+    for (int i = 0; i < 100; i++) {
+        Transaction tx;
+        int gen_rc = clientGenerateTransaction(&tx);
+        if (gen_rc != SUCCESS || txIsValid(tx.text) != SUCCESS) {
+            invalidCount++;
+            printf("  tx #%d NON valida: '%s' (%s)\n", i, tx.text, codesToString(gen_rc));
+        }
+    }
+    printf("Transazioni non valide su 100: %d -> %s\n",
+           invalidCount, invalidCount == 0 ? codesToString(SUCCESS) : codesToString(INVALID_TRANSACTION));
+    printf("\n");
+
+    printf("--- TEST CLIENT: SEED PER-PROCESSO (sequenze diverse) ---\n");
+    // Due seed diversi simulano due client con pid diversi: e' lo scenario
+    // che srandom(time(NULL) ^ getpid()) in runClient() garantisce.
+    Transaction seqA[5], seqB[5];
+    int seqRc = SUCCESS;
+    srandom(1111);
+    for (int i = 0; i < 5; i++) {
+        int genRc = clientGenerateTransaction(&seqA[i]);
+        if (genRc != SUCCESS) seqRc = genRc;
+    }
+    srandom(2222);
+    for (int i = 0; i < 5; i++) {
+        int genRc = clientGenerateTransaction(&seqB[i]);
+        if (genRc != SUCCESS) seqRc = genRc;
+    }
+    if (seqRc != SUCCESS) {
+        printf("Generazione sequenze FALLITA: %s\n", codesToString(seqRc));
+    }
+
+    int sequencesDiffer = 0;
+    for (int i = 0; i < 5; i++) {
+        if (strcmp(seqA[i].text, seqB[i].text) != 0) {
+            sequencesDiffer = 1;
+            break;
+        }
+    }
+    printf("Sequenza A[0]: %s\n", seqA[0].text);
+    printf("Sequenza B[0]: %s\n", seqB[0].text);
+    printf("Sequenze diverse con seed diversi: %s\n",
+           sequencesDiffer ? codesToString(SUCCESS) : "FALLITO (sequenze identiche)");
+    printf("\n");
+
+    /* ================= TEST MINER (workstream E) ================= */
+
+    printf("--- TEST MINER: MINING CON DIFFICULTY PICCOLA ---\n");
+    SharedState *minerTestSt = malloc(sizeof(SharedState));
+    if (minerTestSt == NULL) {
+        printf("Errore: memoria insufficiente per il test del miner\n");
+    } else {
+        memset(minerTestSt, 0, sizeof(SharedState));
+        // difficulty=1 rende il test deterministico (random() % 1 == 0
+        // sempre): mina al primo tentativo, senza flakiness. num_nodes=1 e il
+        // mutex della testa servono a minerShouldAbort, che ora legge il
+        // canale NodeHead del node 0.
+        minerTestSt->difficulty = 1;
+        minerTestSt->num_nodes = 1;
+        minerTestSt->running = 1;
+        sem_init(&minerTestSt->heads[0].mutex, 0, 1);
+
+        Block candidate;
+        memset(&candidate, 0, sizeof(Block));
+        candidate.index = 0;
+
+        srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
+        int result = minerMineCandidate(minerTestSt, 0, &candidate, 0);
+        printf("Esito mining (difficulty=1, cima non avanzata): %s\n",
+               result == MINER_MINED ? "MINER_MINED" : codesToString(result));
+        printf("Nonce dopo il mining: %llu\n", (unsigned long long)candidate.nonce);
+
+        sem_destroy(&minerTestSt->heads[0].mutex);
+        free(minerTestSt);
+    }
+    printf("\n");
+
+    printf("--- TEST MINER: ABORT SU CIMA AVANZATA (canale NodeHead) ---\n");
+    // Ora che il canale node -> miner esiste (NodeHead), l'abort per cima
+    // avanzata e' testabile in-process: si costruisce sull'index 0, poi un
+    // node "pubblica" una testa piu' alta e minerShouldAbort deve segnalare
+    // che il lavoro e' stale.
+    SharedState *tipSt = malloc(sizeof(SharedState));
+    if (tipSt == NULL) {
+        printf("Errore: memoria insufficiente per il test della cima\n");
+    } else {
+        memset(tipSt, 0, sizeof(SharedState));
+        tipSt->num_nodes = 1;
+        tipSt->running = 1;
+        sem_init(&tipSt->heads[0].mutex, 0, 1);
+
+        int abortFermo = minerShouldAbort(tipSt, 0, 0);       // cima a height 0: no abort
+        nodePublishHead(tipSt, 0, 1,
+                        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0");
+        int abortAvanzato = minerShouldAbort(tipSt, 0, 0);    // cima a height 1: abort
+
+        printf("Abort con cima ferma (height 0):    %d (atteso 0)\n", abortFermo);
+        printf("Abort con cima avanzata (height 1): %d (atteso 1)\n", abortAvanzato);
+        printf("Esito: %s\n",
+               (!abortFermo && abortAvanzato) ? codesToString(SUCCESS) : "FALLITO");
+
+        sem_destroy(&tipSt->heads[0].mutex);
+        free(tipSt);
+    }
+    printf("\n");
+
+    printf("--- TEST MINER: ABORT SU SHUTDOWN (fork + shared mmap) ---\n");
+    // Serve memoria realmente condivisa: su memoria normale il figlio
+    // scriverebbe su una copia copy-on-write, invisibile al padre. Il mutex
+    // della testa e' pshared=1 perche' vive nella mappatura condivisa.
+    SharedState *abortSt = mmap(NULL, sizeof(SharedState), PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (abortSt == MAP_FAILED) {
+        printf("Errore: mmap fallita per il test di abort\n");
+    } else {
+        memset(abortSt, 0, sizeof(SharedState));
+        abortSt->difficulty = 1000000; // alta apposta: non deve minare per caso
+        abortSt->num_nodes = 1;
+        abortSt->running = 1;
+        sem_init(&abortSt->heads[0].mutex, 1, 1);
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            // Richiede lo shutdown a meta' mining, come farebbe la CLI
+            sleep(2);
+            abortSt->running = 0;
+            _exit(0);
+        } else if (pid > 0) {
+            Block candidate2;
+            memset(&candidate2, 0, sizeof(Block));
+            candidate2.index = 0;
+
+            srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
+            int abortResult = minerMineCandidate(abortSt, 0, &candidate2, 0);
+            waitpid(pid, NULL, 0);
+
+            printf("Esito mining con shutdown a meta' mining (atteso abort): %s\n",
+                   abortResult == MINER_ABORTED ? codesToString(SUCCESS) : "FALLITO (non ha abortito)");
+        } else {
+            printf("Errore: fork fallita per il test di abort\n");
+        }
+        sem_destroy(&abortSt->heads[0].mutex);
+        munmap(abortSt, sizeof(SharedState));
+    }
+    printf("\n");
 
     return 0;
 }

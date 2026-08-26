@@ -11,8 +11,9 @@ LDFLAGS := -pthread          # semafori POSIX (sem_*)
 LDLIBS  := -lrt -lcrypto              # shared memory POSIX (shm_open)
 
 # --- Sorgenti dell'eseguibile principale ---
-# node.c, miner.c, client.c, sha256.c si aggiungeranno da soli via wildcard.
-SRCS      := blockchain.c ipc.c node.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
+# I sorgenti in root sono elencati esplicitamente per tenere test.c (che ha
+# un suo main()) fuori dal binario; utils/ ed encoding/ entrano via wildcard.
+SRCS      := blockchain.c ipc.c node.c miner.c client.c $(wildcard utils/*.c) $(wildcard encoding/*.c)
 OBJS      := $(SRCS:.c=.o)
 
 UTIL_OBJS := $(patsubst %.c,%.o,$(wildcard utils/*.c))
@@ -44,7 +45,10 @@ run: build
 test: $(TEST_BIN)
 	./$(TEST_BIN)
 
-$(TEST_BIN): test.o $(UTIL_OBJS) $(ENC_OBJS)
+# test.c esercita anche miner/client/ipc: servono i rispettivi .o (ipc.o per
+# minerReadTip/minerShouldAbort/nodePublishHead). tx.o e crypto.o arrivano da
+# UTIL_OBJS/ENC_OBJS.
+$(TEST_BIN): test.o miner.o client.o ipc.o $(UTIL_OBJS) $(ENC_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
