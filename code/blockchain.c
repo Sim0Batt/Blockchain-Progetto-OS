@@ -54,99 +54,103 @@ static int parseUnsigned(const char *s, unsigned long *out) {
 }
 
 void handleCommand(char cmd_buffer[512], unsigned long totalChildrens, pid_t *childrenPIDs, SharedState *st) {
-        if (strncmp(cmd_buffer, "stop", 4) == 0) {
-            printf("Closing the system");
-            st->running = 0;
-            for (unsigned long i = 0; i < totalChildrens; i++) {
-                kill(childrenPIDs[i], SIGINT);
-            }
+    if (strncmp(cmd_buffer, "stop", 4) == 0) {
+        printf("Closing the system...\n");
+        st->running = 0;
+        for (unsigned long i = 0; i < totalChildrens; i++) {
+            kill(childrenPIDs[i], SIGINT);
         }
-
-        if (strncmp(cmd_buffer, "pause", 5) == 0) {
-            printf("Pausing the system");
-            for (unsigned long i = 0; i < totalChildrens; i++) {
-                kill(childrenPIDs[i], SIGSTOP);
-            }
+    }
+    else if (strncmp(cmd_buffer, "pause", 5) == 0) {
+        printf("Pausing the system...\n");
+        for (unsigned long i = 0; i < totalChildrens; i++) {
+            kill(childrenPIDs[i], SIGSTOP);
         }
-        else if (strncmp(cmd_buffer, "resume", 6) == 0) {
-            printf("Resuming the system");
-            for (unsigned long i = 0; i < totalChildrens; i++) {
-                kill(childrenPIDs[i], SIGCONT);
-            }
+    }
+    else if (strncmp(cmd_buffer, "resume", 6) == 0) {
+        printf("Resuming the system...\n");
+        for (unsigned long i = 0; i < totalChildrens; i++) {
+            kill(childrenPIDs[i], SIGCONT);
         }
-        else if (strncmp(cmd_buffer, "submit", 6) == 0) {
-            printf("Submitting a transaction");
-            char txtext[TX_MAX_LEN] = {0};
-            if (scanf(cmd_buffer + 7, "\"%255[^\"]\"", txtext) == 1 || scanf(cmd_buffer + 7, "%255[^\n]", txtext) == 1) {
-                if (txIsValid(txtext) == SUCCESS) {
-                    Transaction tx;
-                    strncpy(tx.text, txtext, TX_MAX_LEN);
-                    if (txpoolPut(st, &tx) == SUCCESS) {
-                        printf("Transaction queued");
-                    } else {
-                        printf("IPC Error");
-                    }
-
-                }else {
-                    printf("Transaction format not valid");
+    }
+    else if (strncmp(cmd_buffer, "submit", 6) == 0) {
+        printf("Submitting a transaction...\n");
+        char txtext[TX_MAX_LEN] = {0};
+        
+        // FIX FONDAMENTALE: sscanf invece di scanf
+        if (sscanf(cmd_buffer + 7, "\"%255[^\"]\"", txtext) == 1 || sscanf(cmd_buffer + 7, "%255[^\n]", txtext) == 1) {
+            if (txIsValid(txtext) == SUCCESS) {
+                Transaction tx;
+                strncpy(tx.text, txtext, TX_MAX_LEN);
+                if (txpoolPut(st, &tx) == SUCCESS) {
+                    printf("Transaction queued\n");
+                } else {
+                    printf("IPC Error\n");
                 }
+            } else {
+                printf("Transaction format not valid\n");
             }
-        }else if (strncmp(cmd_buffer, "save blockchain", 16) == 0) {
-            char filename[256];
-            if (sscanf(cmd_buffer + 16, "%255s", filename) == 1) {
-                printf("Saving blockchain to %s\n", filename);
-                Block cmdBlock;
-                memset(&cmdBlock, 0, sizeof(Block));
-                cmdBlock.index = UINT64_MAX;
-                cmdBlock.nonce = 1;
-                strncpy(cmdBlock.tx[0].text, filename, TX_MAX_LEN);
-                inboxPut(st, 0 , &cmdBlock);
-            }
-        }else if (strncmp(cmd_buffer, "request blockchain", 18) == 0) {
+        }
+    }
+    else if (strncmp(cmd_buffer, "save blockchain ", 16) == 0) { 
+        char filename[256];
+        if (sscanf(cmd_buffer + 16, "%255s", filename) == 1) {
+            printf("Saving blockchain to %s\n", filename);
             Block cmdBlock;
             memset(&cmdBlock, 0, sizeof(Block));
             cmdBlock.index = UINT64_MAX;
-
-            if (strstr(cmd_buffer, "--index")) {
-                uint64_t index;
-                if (sscanf(strstr(cmd_buffer, "--index") + 8, "%llu", &index) == 1) {
-                    cmdBlock.nonce = 3;
-                    cmdBlock.timestamp = index;
-                }
-            }else if (strstr(cmd_buffer, "--hash")) {
-                char hash[HASH_BUF_SIZE];
-                if (sscanf(strstr(cmd_buffer, "--hash") + 7, "%64s", hash) == 1) {
-                    cmdBlock.nonce = 4;
-                    strncpy(cmdBlock.tx[0].text, hash, TX_MAX_LEN);
-                }
-            } else {
-                cmdBlock.nonce = 2;
-            }
-
-            if (cmdBlock.nonce != 0) inboxPut(st, 0 , &cmdBlock);
-        } else if (strncmp(cmd_buffer, "request block ", 14) == 0 && strstr(cmd_buffer, "--index ")) {
-            uint64_t index;
-            if (sscanf(strstr(cmd_buffer, "--index ") + 8, "%llu", (unsigned long long *)&index) == 1) {
-                Block cmdBlock;
-                memset(&cmdBlock, 0, sizeof(Block));
-                cmdBlock.index = UINT64_MAX;
-                cmdBlock.nonce = 5;
-                cmdBlock.timestamp = index;
-                inboxPut(st, 0 , &cmdBlock);
-            }
-        } else if (strncmp(cmd_buffer, "request block-hash ", 19) == 0) {
-            char hash[HASH_BUF_SIZE];
-            if (sscanf(cmd_buffer + 19, "%64s", hash) == 1) {
-                Block cmdBlock;
-                memset(&cmdBlock, 0, sizeof(Block));
-                cmdBlock.index = UINT64_MAX;
-                cmdBlock.nonce = 6;
-                strncpy(cmdBlock.tx[0].text, hash, TX_MAX_LEN);
-                inboxPut(st, 0 , &cmdBlock);
-            }
-        } else if (strlen(cmd_buffer) > 0) {
-            printf("Unknown command\n");
+            cmdBlock.nonce = 1;
+            strncpy(cmdBlock.tx[0].text, filename, TX_MAX_LEN);
+            inboxPut(st, 0 , &cmdBlock);
         }
+    }
+    else if (strncmp(cmd_buffer, "request blockchain", 18) == 0) {
+        Block cmdBlock;
+        memset(&cmdBlock, 0, sizeof(Block));
+        cmdBlock.index = UINT64_MAX;
+        
+        if (strstr(cmd_buffer, "--index")) {
+            uint64_t index;
+            if (sscanf(strstr(cmd_buffer, "--index") + 8, "%llu", (unsigned long long *)&index) == 1) {
+                cmdBlock.nonce = 3;
+                cmdBlock.timestamp = index;
+            }
+        } else if (strstr(cmd_buffer, "--hash")) {
+            char hash[HASH_BUF_SIZE];
+            if (sscanf(strstr(cmd_buffer, "--hash") + 7, "%64s", hash) == 1) {
+                cmdBlock.nonce = 4;
+                strncpy(cmdBlock.tx[0].text, hash, TX_MAX_LEN);
+            }
+        } else {
+            cmdBlock.nonce = 2;
+        }
+        if (cmdBlock.nonce != 0) inboxPut(st, 0 , &cmdBlock);
+    }
+    else if (strncmp(cmd_buffer, "request block ", 14) == 0 && strstr(cmd_buffer, "--index ")) {
+        uint64_t index;
+        if (sscanf(strstr(cmd_buffer, "--index ") + 8, "%llu", (unsigned long long *)&index) == 1) {
+            Block cmdBlock;
+            memset(&cmdBlock, 0, sizeof(Block));
+            cmdBlock.index = UINT64_MAX;
+            cmdBlock.nonce = 5;
+            cmdBlock.timestamp = index;
+            inboxPut(st, 0 , &cmdBlock);
+        }
+    }
+    else if (strncmp(cmd_buffer, "request block-hash ", 19) == 0) {
+        char hash[HASH_BUF_SIZE];
+        if (sscanf(cmd_buffer + 19, "%64s", hash) == 1) {
+            Block cmdBlock;
+            memset(&cmdBlock, 0, sizeof(Block));
+            cmdBlock.index = UINT64_MAX;
+            cmdBlock.nonce = 6;
+            strncpy(cmdBlock.tx[0].text, hash, TX_MAX_LEN);
+            inboxPut(st, 0 , &cmdBlock);
+        }
+    }
+    else if (strlen(cmd_buffer) > 0) {
+        printf("Unknown command\n");
+    }
 }
 
 
@@ -301,7 +305,7 @@ int main(int argc, char *argv[]) {
     printf("Node started\n");
 
     int status = 0;
-    while (wait(&status) > 0)
+    while (wait(&status) > 0);
 
     free(childrenPIDs);
     ipcDestroy(st);

@@ -92,20 +92,27 @@ cmdMerkle(){
 
   local count=${#hashes[@]}
 
-  while [[ $count -gt 1 ]]; do
-    if(( count%2 != 0)); then
-      hashes+=("$emptyHash")
-    fi
+  if [[ $count -gt 0 ]]; then
+    while true; do
+      if (( count % 2 != 0 )); then
+        hashes+=("$emptyHash")
+        ((count++))
+      fi
 
-    local -a nextHashes
-    for (( i=0; i<count; i+=2)); do
-      local combined="${hashes[i]}${hashes[i+1]}"
-      nextHashes+=($(calculateSha256 "$combined"))
+      local -a nextHashes
+      for (( i=0; i<count; i+=2)); do
+        local combined="${hashes[i]}${hashes[i+1]}"
+        nextHashes+=($(calculateSha256 "$combined"))
+      done
+
+      hashes=("${nextHashes[@]}")
+      count=${#hashes[@]}
+
+      if [[ $count -le 1 ]]; then
+        break
+      fi
     done
-
-    hashes=("${nextHashes[@]}")
-    count=${#hashes[@]}
-  done
+  fi
 
   echo "${hashes[0]}"
 }
@@ -139,6 +146,9 @@ cmdVerify(){
     fi
 
     local cleanLine=$(echo "$line" | tr -d '\r' | tr -d '\n')
+    if [[ -z "$cleanLine" ]]; then
+      continue
+    fi
 
     local idxHex=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $1}')
     local tsHex=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $2}')
@@ -151,7 +161,7 @@ cmdVerify(){
       txs_raw=$(echo "$cleanLine" | awk -F',' '{print $6}')
     fi
 
-    local idxDec=$((16#idxHex))
+    local idxDec=$((16#$idxHex))
     verifyIndex "$expectedIndex" "$idxDec"
     if [[ $? -ne $SUCCESS ]]; then exit $INVALID_BLOCK; fi
 
@@ -166,6 +176,8 @@ cmdVerify(){
 
     local headerCombined="${idxHex}${tsHex}${prevHash}${merkleCsv}${nonceHex}"
     expectedHash=$(cmdHash "$headerCombined")
+
+    ((expectedIndex++))
 
 
   done < "$filePath"
