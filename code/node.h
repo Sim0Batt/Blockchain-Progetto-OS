@@ -10,5 +10,5 @@ int nodeHandleBlock(SharedState *st, uint32_t nodeId, Blockchain *chain, const B
 
 /* Loop del processo Node: init copia locale, apri log, consuma la propria
  * inbox all'infinito. */
-int runNode(SharedState *st, uint32_t nodeId);
+int runNode(SharedState *st, uint32_t nodeId, const char *initialState);
 #endif

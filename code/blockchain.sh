@@ -61,6 +61,138 @@ readBlockChainCsv(){
   return $SUCCESS
 }
 
+# SHA
+calculateSha256() {
+  echo -n "$1" | sha256sum |  awk '{print $1}'
+}
 
 
+# Implementazione di Merkle
+cmdMerkle(){
+  local txString="$1"
+  local emptyHash=$(calculateSha256 "")
 
+  if [[ -z "$txString" ]]; then
+    echo "$emptyHash"
+    return $SUCCESS
+  fi
+
+  local -a txs
+  IFS=':' read -ra parts <<< "${txString//::/:}"
+  for part in "${parts[@]}"; do
+    if [[ -n "$part" ]]; then
+      txs+=("$part")
+    fi
+  done
+
+  local -a hashes
+  for tx in "${txs[@]}"; do
+    hashes+=($(calculateSha256 "$tx"))
+  done
+
+  local count=${#hashes[@]}
+
+  while [[ $count -gt 1 ]]; do
+    if(( count%2 != 0)); then
+      hashes+=("$emptyHash")
+    fi
+
+    local -a nextHashes
+    for (( i=0; i<count; i+=2)); do
+      local combined="${hashes[i]}${hashes[i+1]}"
+      nextHashes+=($(calculateSha256 "$combined"))
+    done
+
+    hashes=("${nextHashes[@]}")
+    count=${#hashes[@]}
+  done
+
+  echo "${hashes[0]}"
+}
+
+cmdHash() {
+  local blockData="$1"
+
+  blockData=$(echo "$blockData" | tr -d ' "' | tr -d '\n' | tr -d '\r')
+
+  local headerHex="${blockData:0:176}"
+  calculateSha256 "$headerHex"
+}
+
+cmdVerify(){
+  local filePath="$1"
+
+  readBlockChainCsv "$filePath"
+  if [[ $? -ne $SUCCESS ]]; then
+    exit $PARSE_ERROR
+  fi
+
+  local expectedIndex=0
+  local expectedHash=""
+  local lineNum=0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    ((lineNum++))
+
+    if [[ $lineNum -eq 1 ]]; then
+      continue
+    fi
+
+    local cleanLine=$(echo "$line" | tr -d '\r' | tr -d '\n')
+
+    local idxHex=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $1}')
+    local tsHex=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $2}')
+    local prevHash=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $3}')
+    local merkleCsv=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $4}')
+    local nonceHex=$(echo "$cleanLine" | tr -d ' ' | awk -F',' '{print $5}')
+
+    local txs_raw=$(echo "$cleanLine" | grep -o '".*"' | sed 's/"//g')
+    if [[ -z "$txs_raw" ]]; then
+      txs_raw=$(echo "$cleanLine" | awk -F',' '{print $6}')
+    fi
+
+    local idxDec=$((16#idxHex))
+    verifyIndex "$expectedIndex" "$idxDec"
+    if [[ $? -ne $SUCCESS ]]; then exit $INVALID_BLOCK; fi
+
+    if [[ $idxDec -gt 0 ]]; then
+      verifyChainLink "$expectedHash" "$prevHash"
+      if [[ $? -ne $SUCCESS ]]; then exit $CHAIN_MISMATCH; fi
+    fi
+
+    local calcMekle=$(cmdMerkle "$txs_raw")
+    verifyMerkelTree "$merkleCsv" "$calcMekle"
+    if [[ $? -ne $SUCCESS ]]; then exit $INVALID_BLOCK; fi
+
+    local headerCombined="${idxHex}${tsHex}${prevHash}${merkleCsv}${nonceHex}"
+    expectedHash=$(cmdHash "$headerCombined")
+
+
+  done < "$filePath"
+
+  echo "Verification completed, no errors"
+  exit $SUCCESS
+}
+
+
+# Parsing degli argomenti
+if [[ $# -lt 2 ]]; then
+    echo "Usage: $0 --verify <state.csv> | --hash <block_data> | --merkle <transactions>"
+    exit $PARSE_ERROR
+fi
+
+case "$1" in
+    --verify)
+        cmdVerify "$2"
+        ;;
+    --hash)
+        cmdHash "$2"
+        ;;
+    --merkle)
+        cmdMerkle "$2"
+        ;;
+    *)
+        echo "Comando sconosciuto: $1"
+        exit $PARSE_ERROR
+        ;;
+esac

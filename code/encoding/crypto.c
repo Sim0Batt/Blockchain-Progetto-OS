@@ -1,20 +1,20 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <string.h>
-#include <openssl/sha.h>
 
 #include "crypto.h"
 #include "encoding.h"
-
-
+#include "sha.h"
 
 void calculateSha256(const char *input, char *output) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
+    unsigned char hash[SHA256_BLOCK_SIZE];
+    SHA256CTX ctx;
 
-    SHA256((const unsigned char *)input, strlen(input), hash);
+    sha256Init(&ctx);
+    sha256Update(&ctx, (const uint8_t *)input, strlen(input));
+    sha256Final(&ctx, hash);
 
-    bytesToHex(hash, SHA256_DIGEST_LENGTH, output, HASH_BUF_SIZE);
-
+    bytesToHex(hash, SHA256_BLOCK_SIZE, output, HASH_BUF_SIZE);
 }
 
 
@@ -69,23 +69,25 @@ void calculateMerkleRoot(const char *transaction, char *merkleRoot) {
      * Qui comincia la vera e propria "scalata" dell'albero Merkle, cominciamo a salire l'albero a due a due
      * fino ad arrivare alla root.
      */
-    while (counter > 1) {
+    if (counter > 0) {
 
-        // Creazione del blocco di padding
-        if (counter % 2 != 0) {
-            strncpy(hashes[counter++], emptyBuffer, HASH_BUF_SIZE);
-        }
+        do{
+            // Creazione del blocco di padding
+            if (counter % 2 != 0) {
+                strncpy(hashes[counter++], emptyBuffer, HASH_BUF_SIZE);
+            }
 
-        int nextCount = 0;
-        for (int i = 0; i < counter; i += 2) {
-            char combined[HASH_BUF_SIZE * 2];
+            int nextCount = 0;
+            for (int i = 0; i < counter; i += 2) {
+                char combined[HASH_BUF_SIZE * 2];
 
-            // Concateniamo i vari hash per arrivare alla fine
-            snprintf(combined, HASH_BUF_SIZE * 2, "%s%s", hashes[i], hashes[i + 1]);
+                // Concateniamo i vari hash per arrivare alla fine
+                snprintf(combined, HASH_BUF_SIZE * 2, "%s%s", hashes[i], hashes[i + 1]);
 
-            calculateSha256(combined, hashes[nextCount++]);
-        }
-        counter = nextCount;
+                calculateSha256(combined, hashes[nextCount++]);
+            }
+            counter = nextCount;
+        }while (counter > 1);
     }
 
     // L'ultimo elemento rimasto dalla creazione della matrice sarà l'indice 0, quindi la radice dell'albero markle

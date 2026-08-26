@@ -9,11 +9,14 @@
  *  NON usa exec(): i figli ereditano la mappatura della shm e i semafori
  *  gia' inizializzati dal padre.
  * ============================================================ */
+#include "client.h"
 #include "shared_state.h"
 #include "ipc.h"
+#include "miner.h"
 #include "node.h"
 #include "utils/errors.h"
 #include "utils/csv_manager.h"
+#include "utils/tx.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +24,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <signal.h>
 
 /* Valori di default per i parametri opzionali. */
 #define DEFAULT_TX_FREQUENCY  1
@@ -48,6 +52,103 @@ static int parseUnsigned(const char *s, unsigned long *out) {
     *out = v;
     return SUCCESS;
 }
+
+void handleCommand(char cmd_buffer[512], unsigned long totalChildrens, pid_t *childrenPIDs, SharedState *st) {
+        if (strncmp(cmd_buffer, "stop", 4) == 0) {
+            printf("Closing the system");
+            st->running = 0;
+            for (unsigned long i = 0; i < totalChildrens; i++) {
+                kill(childrenPIDs[i], SIGINT);
+            }
+        }
+
+        if (strncmp(cmd_buffer, "pause", 5) == 0) {
+            printf("Pausing the system");
+            for (unsigned long i = 0; i < totalChildrens; i++) {
+                kill(childrenPIDs[i], SIGSTOP);
+            }
+        }
+        else if (strncmp(cmd_buffer, "resume", 6) == 0) {
+            printf("Resuming the system");
+            for (unsigned long i = 0; i < totalChildrens; i++) {
+                kill(childrenPIDs[i], SIGCONT);
+            }
+        }
+        else if (strncmp(cmd_buffer, "submit", 6) == 0) {
+            printf("Submitting a transaction");
+            char txtext[TX_MAX_LEN] = {0};
+            if (scanf(cmd_buffer + 7, "\"%255[^\"]\"", txtext) == 1 || scanf(cmd_buffer + 7, "%255[^\n]", txtext) == 1) {
+                if (txIsValid(txtext) == SUCCESS) {
+                    Transaction tx;
+                    strncpy(tx.text, txtext, TX_MAX_LEN);
+                    if (txpoolPut(st, &tx) == SUCCESS) {
+                        printf("Transaction queued");
+                    } else {
+                        printf("IPC Error");
+                    }
+
+                }else {
+                    printf("Transaction format not valid");
+                }
+            }
+        }else if (strncmp(cmd_buffer, "save blockchain", 16) == 0) {
+            char filename[256];
+            if (sscanf(cmd_buffer + 16, "%255s", filename) == 1) {
+                printf("Saving blockchain to %s\n", filename);
+                Block cmdBlock;
+                memset(&cmdBlock, 0, sizeof(Block));
+                cmdBlock.index = UINT64_MAX;
+                cmdBlock.nonce = 1;
+                strncpy(cmdBlock.tx[0].text, filename, TX_MAX_LEN);
+                inboxPut(st, 0 , &cmdBlock);
+            }
+        }else if (strncmp(cmd_buffer, "request blockchain", 18) == 0) {
+            Block cmdBlock;
+            memset(&cmdBlock, 0, sizeof(Block));
+            cmdBlock.index = UINT64_MAX;
+
+            if (strstr(cmd_buffer, "--index")) {
+                uint64_t index;
+                if (sscanf(strstr(cmd_buffer, "--index") + 8, "%llu", &index) == 1) {
+                    cmdBlock.nonce = 3;
+                    cmdBlock.timestamp = index;
+                }
+            }else if (strstr(cmd_buffer, "--hash")) {
+                char hash[HASH_BUF_SIZE];
+                if (sscanf(strstr(cmd_buffer, "--hash") + 7, "%64s", hash) == 1) {
+                    cmdBlock.nonce = 4;
+                    strncpy(cmdBlock.tx[0].text, hash, TX_MAX_LEN);
+                }
+            } else {
+                cmdBlock.nonce = 2;
+            }
+
+            if (cmdBlock.nonce != 0) inboxPut(st, 0 , &cmdBlock);
+        } else if (strncmp(cmd_buffer, "request block ", 14) == 0 && strstr(cmd_buffer, "--index ")) {
+            uint64_t index;
+            if (sscanf(strstr(cmd_buffer, "--index ") + 8, "%llu", (unsigned long long *)&index) == 1) {
+                Block cmdBlock;
+                memset(&cmdBlock, 0, sizeof(Block));
+                cmdBlock.index = UINT64_MAX;
+                cmdBlock.nonce = 5;
+                cmdBlock.timestamp = index;
+                inboxPut(st, 0 , &cmdBlock);
+            }
+        } else if (strncmp(cmd_buffer, "request block-hash ", 19) == 0) {
+            char hash[HASH_BUF_SIZE];
+            if (sscanf(cmd_buffer + 19, "%64s", hash) == 1) {
+                Block cmdBlock;
+                memset(&cmdBlock, 0, sizeof(Block));
+                cmdBlock.index = UINT64_MAX;
+                cmdBlock.nonce = 6;
+                strncpy(cmdBlock.tx[0].text, hash, TX_MAX_LEN);
+                inboxPut(st, 0 , &cmdBlock);
+            }
+        } else if (strlen(cmd_buffer) > 0) {
+            printf("Unknown command\n");
+        }
+}
+
 
 int main(int argc, char *argv[]) {
     /* --- 1. Parsing e validazione degli argomenti --- */
@@ -95,10 +196,20 @@ int main(int argc, char *argv[]) {
         return PARSE_ERROR;
     }
 
-    printf("Avvio: %lu node, %lu miner, %lu client "
+    printf("Start: %lu node, %lu miner, %lu client "
            "(frequency=%lu, difficulty=%lu, stato iniziale=%s)\n",
            numNodes, numMiners, numClients, txFrequency, difficulty,
-           initialState ? initialState : "nessuno");
+           initialState ? initialState : "none");
+    
+    if (initialState != NULL) {
+        Blockchain tmp;
+        memset(&tmp, 0, sizeof(Blockchain));
+        int load = loadCsv(initialState, &tmp);
+        if (load != SUCCESS) {
+            fprintf(stderr, "Error: failed to initialize initial state\n");
+            return load;
+        }
+    }
 
     /* --- 2. Creazione della shared memory (PRIMA di ogni fork) --- */
     SharedState *st = ipcCreate((uint32_t)difficulty, (uint32_t)numNodes);
@@ -106,6 +217,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Errore: impossibile creare la shared memory.\n");
         return IPC_ERROR;
     }
+
+    unsigned long totalChildrens = numNodes + numMiners + numClients;
+    pid_t *childrenPIDs = malloc(totalChildrens * sizeof(pid_t));
+    unsigned long currentChild = 0;
 
     /* --- 3. Fork dei node: ogni figlio esegue runNode e non ritorna --- */
     for (unsigned long i = 0; i < numNodes; i++) {
@@ -118,27 +233,78 @@ int main(int argc, char *argv[]) {
         }
         if (pid == 0) {
             /* figlio: diventa un node. Niente exec -> eredita la shm. */
-            int rc = runNode(st, (uint32_t)i);
+            int rc = runNode(st, (uint32_t)i, initialState);
             _exit(rc);
         }
+
+        childrenPIDs[currentChild++] = pid;
     }
 
-    /* TODO strato 2: fork di miner e client, CLI del parent, signal. */
+
+
     (void)numMiners;
     (void)numClients;
     (void)txFrequency;
     (void)initialState;
 
-    printf("Node avviati. (CLI non ancora implementata: attendo i figli)\n");
 
-    /* --- 4. Attesa della terminazione dei figli --- */
-    int status = 0;
-    while (wait(&status) > 0) {
-        /* raccoglie tutti i figli; esce quando non ce ne sono piu' */
+    // Fork dei Miners
+    for (unsigned long i = 0; i < numMiners; i++) {
+        pid_t pid = fork();
+        if (pid == -1) {
+            perror("fork (miner)");
+            st->running = 0;
+            ipcDestroy(st);
+            return IPC_ERROR;
+        }
+
+        if (pid == 0) {
+            int rc = runMiner(st, (int)i);
+            _exit(rc);
+        }
+        childrenPIDs[currentChild++] = pid;
     }
 
-    /* --- 5. Cleanup delle risorse IPC --- */
+
+    for (unsigned long i = 0; i < numClients; i++) {
+        pid_t pid = fork();
+        if (pid == -1) {
+            perror("fork (client)");
+            st->running = 0;
+            ipcDestroy(st);
+            return IPC_ERROR;
+        }
+
+        if (pid == 0) {
+            int rc = runClient(st, (double)txFrequency, (int)i);
+            _exit(rc);
+        }
+        childrenPIDs[currentChild++] = pid;
+    }
+
+    // Loop CLI
+    char cmd_buffer[512];
+    printf("\n--- BLOCKCHAIN CLI ---\n");
+    printf("Commands: submit, pause, resume, stop, save blockchain, request blockchain, request block, request block-hash\n");
+    while (st->running) {
+        printf("> ");
+        fflush(stdout);
+
+        if (fgets(cmd_buffer, sizeof(cmd_buffer), stdin) == NULL) {
+            break;
+        }
+        cmd_buffer[strcspn(cmd_buffer, "\r\n")] = 0;
+
+        handleCommand(cmd_buffer, totalChildrens, childrenPIDs, st);
+    }
+
+    printf("Node started\n");
+
+    int status = 0;
+    while (wait(&status) > 0)
+
+    free(childrenPIDs);
     ipcDestroy(st);
-    printf("Sistema terminato, risorse IPC rilasciate.\n");
+    printf("System terminated, released all the resources\n");
     return SUCCESS;
 }
