@@ -3,27 +3,19 @@
 
 #include "shared_state.h"
 
-/* ============================================================
- *  Processo Client (workstream F).
- *  Genera transazioni random valide e le sottomette al tx_pool
- *  condiviso, a frequenza costante.
- * ============================================================ */
+/* Processo client: genera transazioni random valide e le sottomette al
+ * tx_pool condiviso a frequenza costante. */
 
-/* Entry point del processo client, chiamata dal bootstrapper (G) nel
- * figlio dopo la fork() (niente exec, niente main() qui).
- * txFrequency = transazioni al secondo, deve essere > 0.
- * Gira finche' st->running non diventa 0. Logga su client-<PID>.log.
- * Ritorna SUCCESS o un error code da errors.h. */
+/* Entry point del processo client: il bootstrapper la chiama nel figlio dopo
+ * la fork(), senza exec. 'txFrequency' e' in transazioni al secondo e deve
+ * essere > 0. Gira finche' st->running non diventa 0 e logga su
+ * client-<PID>.log. Ritorna SUCCESS o un error code da errors.h. */
 int runClient(SharedState *st, double txFrequency, int clientId);
 
-/* ---- Helper esposto SOLO per testabilita' (vedi test.c) --------------
- * Non e' pensato per essere chiamato dal bootstrapper: e' la stessa
- * funzione che runClient() usa internamente per generare una tx, esposta
- * qui per poterla testare in isolamento (formato regex, seed per-processo)
- * senza dover mandare su un intero SharedState/IPC.
- * Genera una transazione random valida (due nomi + importo >= 1) dentro
- * 'out'. Usa random(): il chiamante e' responsabile del seed (srandom).
- * Ritorna SUCCESS o un error code su fallimento di serializzazione. */
+/* Genera in 'out' una transazione random valida: due nomi diversi e un
+ * importo >= 1. Usa random(), quindi il seed e' compito del chiamante.
+ * Esposta per poterla provare in isolamento, senza tirare su SharedState e
+ * IPC. Ritorna SUCCESS o un error code se la serializzazione fallisce. */
 int clientGenerateTransaction(Transaction *out);
 
 #endif /* CLIENT_H */
