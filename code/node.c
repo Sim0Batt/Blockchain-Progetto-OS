@@ -81,14 +81,14 @@ int nodeHandleBlock(SharedState *st, uint32_t nodeId, Blockchain *chain, const B
     uint64_t before = chain->height;
     int rc = appendChainBlock(chain, blk);
     if (rc == SUCCESS) {
-        /* pubblica la propria testa: il miner attaccato a questo node la legge */
+        /* la testa pubblicata qui e' quella che legge il miner agganciato */
         char topHash[HASH_BUF_SIZE];
         calculateBlockHash(&chain->blocks[chain->height - 1], topHash);
         nodePublishHead(st, nodeId, chain->height, topHash);
         if (log) fprintf(log, "node %u: appended index=%llu (height %llu->%llu), propagating\n",
                          nodeId, (unsigned long long)blk->index,
                          (unsigned long long)before, (unsigned long long)chain->height);
-        /* blocco NUOVO -> propaga ai peer, escludendo se stessi */
+        /* blocco nuovo: propaga ai peer, escludendo se stessi */
         inboxBroadcast(st, blk, (int)nodeId);
     } else {
         if (log) fprintf(log, "node %u: rejected index=%llu (rc=%d), not propagating\n",
@@ -105,7 +105,6 @@ int runNode(SharedState *st, uint32_t nodeId, const char *initialState) {
     FILE *log = fopen(logname, "w");
     if (!log) return IO_ERROR;
 
-    // Caricamento dello stato iniziale
     if (initialState != NULL) {
         if (loadCsv(initialState, &chain) != SUCCESS) {
             fprintf(stderr, "Error: no initial state found\n");

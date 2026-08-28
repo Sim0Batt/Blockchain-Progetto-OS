@@ -1,19 +1,16 @@
 #include "ipc.h"
 #include "utils/errors.h"
 
-#include <fcntl.h>    /* O_CREAT, O_RDWR            */
-#include <sys/mman.h> /* shm_open, mmap, PROT_*, MAP_* */
-#include <unistd.h>   /* ftruncate, close          */
-#include <string.h>   /* memset                    */
-#include <stdio.h>    /* perror                    */
-#include <errno.h>    /* errno, EINTR              */
-#include <time.h>     /* clock_gettime, timespec   */
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <time.h>
 
-/* ---- Helper interno ---- */
-
-/* sem_wait che riprova se interrotto da un signal (EINTR). I signal di
- * pause/resume (SIGCONT) o un SIGCHLD possono interrompere una sem_wait
- * in corso: non e' un errore, si riprova. */
+/* sem_wait che riprova se interrotto da un signal: pause/resume (SIGCONT) o un
+ * SIGCHLD possono interrompere un'attesa in corso, e non e' un errore. */
 static int semWaitSafe(sem_t *s) {
     int r;
     do {
@@ -22,7 +19,7 @@ static int semWaitSafe(sem_t *s) {
     return r;
 }
 
-/* ============================ Ciclo di vita ============================ */
+/* Ciclo di vita del segmento condiviso. */
 
 SharedState *ipcCreate(uint32_t difficulty, uint32_t num_nodes) {
     int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0600);
@@ -62,7 +59,7 @@ void ipcDestroy(SharedState *st) {
     shm_unlink(SHM_NAME);
 }
 
-/* ================= Bounded buffer transazioni (client -> miner) ======== */
+/* Bounded buffer delle transazioni: client -> miner. */
 
 int txpoolPut(SharedState *st, const Transaction *tx) {
     if (st == NULL || tx == NULL) {
@@ -71,11 +68,11 @@ int txpoolPut(SharedState *st, const Transaction *tx) {
     if (semWaitSafe(&st->tx_pool.empty) == -1) { /* aspetta uno slot libero */
         return IPC_ERROR;
     }
-    semWaitSafe(&st->tx_pool.mutex); /* --- sezione critica --- */
+    semWaitSafe(&st->tx_pool.mutex);
     st->tx_pool.slots[st->tx_pool.tail] = *tx;
     st->tx_pool.tail = (st->tx_pool.tail + 1) % TX_POOL_CAP;
     sem_post(&st->tx_pool.mutex);
-    sem_post(&st->tx_pool.full); /* un elemento in piu' */
+    sem_post(&st->tx_pool.full);
     return SUCCESS;
 }
 
@@ -90,7 +87,7 @@ int txpoolGet(SharedState *st, Transaction *out) {
     *out = st->tx_pool.slots[st->tx_pool.head];
     st->tx_pool.head = (st->tx_pool.head + 1) % TX_POOL_CAP;
     sem_post(&st->tx_pool.mutex);
-    sem_post(&st->tx_pool.empty); /* uno slot libero in piu' */
+    sem_post(&st->tx_pool.empty);
     return SUCCESS;
 }
 
@@ -99,7 +96,7 @@ int txpoolTryget(SharedState *st, Transaction *out) {
         return PARSE_ERROR;
     }
     if (sem_trywait(&st->tx_pool.full) == -1) {
-        /* vuoto (EAGAIN) o interrotto: nessun elemento disponibile ora */
+        /* vuoto o interrotto: nessun elemento disponibile ora */
         return IPC_EMPTY;
     }
     semWaitSafe(&st->tx_pool.mutex);
@@ -110,9 +107,8 @@ int txpoolTryget(SharedState *st, Transaction *out) {
     return SUCCESS;
 }
 
-/* ================= Inbox per-node (miner/peer -> node) ================= */
+/* Inbox per node: miner/peer -> node. */
 
-/* Consegna un blocco all'inbox del node 'nodeId'. Bloccante se piena. */
 int inboxPut(SharedState *st, uint32_t nodeId, const Block *blk) {
     if (st == NULL || blk == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
     NodeInbox *ib = &st->inboxes[nodeId];
@@ -125,7 +121,6 @@ int inboxPut(SharedState *st, uint32_t nodeId, const Block *blk) {
     return SUCCESS;
 }
 
-/* Il node 'nodeId' preleva un blocco dalla SUA inbox. Bloccante se vuota. */
 int inboxGet(SharedState *st, uint32_t nodeId, Block *out) {
     if (st == NULL || out == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
     NodeInbox *ib = &st->inboxes[nodeId];
@@ -138,10 +133,9 @@ int inboxGet(SharedState *st, uint32_t nodeId, Block *out) {
     return SUCCESS;
 }
 
-/* Variante NON bloccante di inboxPut: se l'inbox del peer e' piena ritorna
- * subito IPC_ERROR invece di bloccare. Usata dalla propagazione per evitare
- * stalli circolari (un node che propaga non deve bloccarsi: smetterebbe di
- * consumare la propria inbox). */
+/* Variante non bloccante di inboxPut, usata dalla propagazione: un node fermo
+ * su un peer saturo smetterebbe di consumare la propria inbox, e con qualche
+ * node in attesa reciproca si arriverebbe allo stallo. */
 int inboxTryput(SharedState *st, uint32_t nodeId, const Block *blk) {
     if (st == NULL || blk == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
     NodeInbox *ib = &st->inboxes[nodeId];
@@ -154,9 +148,8 @@ int inboxTryput(SharedState *st, uint32_t nodeId, const Block *blk) {
     return SUCCESS;
 }
 
-/* Broadcast non bloccante: salta i peer con inbox piena (best-effort).
- * La mancata consegna a un peer saturo non e' fatale: il blocco gli
- * arrivera' da un altro percorso di propagazione. */
+/* Broadcast best-effort: i peer con inbox piena vengono saltati, tanto il
+ * blocco gli arrivera' da un altro percorso di propagazione. */
 int inboxBroadcast(SharedState *st, const Block *blk, int exclude) {
     if (st == NULL || blk == NULL) return PARSE_ERROR;
     for (uint32_t i = 0; i < st->num_nodes; i++) {
@@ -166,7 +159,7 @@ int inboxBroadcast(SharedState *st, const Block *blk, int exclude) {
     return SUCCESS;
 }
 
-/* ===== Coordinamento node -> miner (NodeHead per-node) ===== */
+/* Coordinamento node -> miner: una testa pubblicata per node. */
 
 int nodePublishHead(SharedState *st, uint32_t nodeId, uint64_t height, const char *lastHash) {
     if (st == NULL || lastHash == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;

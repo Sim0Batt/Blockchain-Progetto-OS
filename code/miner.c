@@ -12,9 +12,7 @@
 #include "utils/errors.h"
 #include "encoding/crypto.h"
 
-/* ================= Helper interni (non esposti in miner.h) ============ */
-
-// Scrive una riga di log con timestamp, id del miner e pid.
+// Riga di log con timestamp, id del miner e pid.
 static void minerLog(FILE *log, int minerId, const char *fmt, ...) {
     if (log == NULL) {
         return;
@@ -34,11 +32,11 @@ static void minerLog(FILE *log, int minerId, const char *fmt, ...) {
     va_end(args);
 
     fprintf(log, "\n");
-    fflush(log); // il log deve restare leggibile anche se il processo viene ucciso
+    fflush(log); // il log resta leggibile anche se il processo viene ucciso
 }
 
-// Unisce i due motivi di abort: shutdown o cima avanzata sul node agganciato.
-// Separata da minerShouldAbort (ipc.h), che resta un check puro sulla cima.
+// I due motivi di abort insieme: shutdown, oppure cima avanzata sul node
+// agganciato (minerShouldAbort da solo guarda solo la cima).
 static int minerAbortRequested(SharedState *st, uint32_t nodeId, uint64_t builtOnIndex) {
     if (!st->running) {
         return 1;
@@ -47,7 +45,7 @@ static int minerAbortRequested(SharedState *st, uint32_t nodeId, uint64_t builtO
 }
 
 /* Pausa dopo un errore transitorio: evita di riciclare il loop a CPU piena
- * senza incidere sulla latenza dello shutdown. */
+ * senza rallentare lo shutdown. */
 #define ERROR_RETRY_SECONDS 0.1
 
 // nanosleep che riprende dal residuo se interrotto da un signal (EINTR).
@@ -65,8 +63,6 @@ static void sleepInterruptible(double seconds) {
     }
 }
 
-/* ============================ API pubblica ============================= */
-
 int minerBuildCandidate(SharedState *st, uint32_t nodeId, Block *candidate, uint64_t *builtOnIndex) {
     if (st == NULL || candidate == NULL || builtOnIndex == NULL) {
         return PARSE_ERROR;
@@ -74,8 +70,8 @@ int minerBuildCandidate(SharedState *st, uint32_t nodeId, Block *candidate, uint
 
     memset(candidate, 0, sizeof(Block));
 
-    // Cima su cui costruire, letta dal node 'nodeId' via NodeHead: altezza
-    // (= indice del prossimo blocco) e hash in cima (= prev_hash del candidato).
+    // Cima del node 'nodeId': l'altezza e' l'indice del prossimo blocco,
+    // l'hash in cima diventa il prev_hash del candidato.
     uint64_t height;
     char prevHash[HASH_BUF_SIZE];
     int rc = minerReadTip(st, nodeId, &height, prevHash);
@@ -85,16 +81,15 @@ int minerBuildCandidate(SharedState *st, uint32_t nodeId, Block *candidate, uint
 
     candidate->index = height;
     candidate->timestamp = (uint64_t)time(NULL);
-    // prev_hash = prevHash. Con chain vuota (height 0) prevHash e' vuoto: e' il
-    // genesis, e il node non valida il prev_hash dell'index 0 (appendChainBlock
-    // in utils/chain.c), quindi la stringa vuota va bene.
+    // Con chain vuota prevHash e' vuoto: stiamo costruendo il genesis, e il node
+    // non valida il prev_hash dell'index 0 (appendChainBlock in utils/chain.c).
     strncpy(candidate->prev_hash, prevHash, HASH_BUF_SIZE - 1);
     candidate->nonce = 0;
     *builtOnIndex = height;
 
-    // Drena le tx presenti, fino a MAX_TX_PER_BLOCK, con la get non bloccante:
-    // txpoolGet bloccherebbe impedendo i check di abort e shutdown. Pool vuoto
-    // => tx_count 0, e decide runMiner.
+    // Drena le tx gia' presenti con la get non bloccante: txpoolGet ci
+    // lascerebbe appesi, senza piu' controllare abort e shutdown. Se il pool e'
+    // vuoto esce con tx_count 0 e decide runMiner.
     Transaction tx;
     while (candidate->tx_count < MAX_TX_PER_BLOCK) {
         int getrc = txpoolTryget(st, &tx);
@@ -115,7 +110,7 @@ int minerBuildCandidate(SharedState *st, uint32_t nodeId, Block *candidate, uint
                           candidate->tx[i].text,
                           (i + 1 < candidate->tx_count) ? "::" : "");
         if (n < 0 || (size_t)n >= sizeof(joined) - used) {
-            return MEMORY_ERROR; // non dovrebbe accadere con i limiti di shared_state.h
+            return MEMORY_ERROR; // improbabile con i limiti di shared_state.h
         }
         used += (size_t)n;
     }
@@ -130,13 +125,13 @@ int minerMineCandidate(SharedState *st, uint32_t nodeId, Block *candidate, uint6
         return PARSE_ERROR;
     }
     if (st->difficulty == 0) {
-        return PARSE_ERROR; // evita la divisione per zero su random() % difficulty
+        return PARSE_ERROR; // random() % difficulty dividerebbe per zero
     }
 
     int minato = 0;
     while (!minato) {
-        // Sleep a passi da 1s (N random 1..5), non un sleep(N) monolitico: cosi'
-        // si controlla lo stato condiviso fra un passo e l'altro.
+        // Attesa spezzata in passi da 1s invece di un unico sleep(N): cosi' si
+        // rilegge lo stato condiviso fra un passo e l'altro.
         int passi = 1 + (int)(random() % 5);
         for (int passo = 0; passo < passi; passo++) {
             sleep(1);
@@ -163,8 +158,8 @@ int runMiner(SharedState *st, int minerId) {
         return PARSE_ERROR;
     }
 
-    // Seed per-processo: i miner nascono da fork() quasi nello stesso istante,
-    // senza lo XOR col pid genererebbero sequenze identiche.
+    // Seed per processo: i miner nascono da fork() quasi nello stesso istante,
+    // senza lo XOR col pid produrrebbero sequenze identiche.
     srandom((unsigned int)(time(NULL) ^ getpid()));
 
     char logName[64];
@@ -174,9 +169,8 @@ int runMiner(SharedState *st, int minerId) {
         return IO_ERROR;
     }
 
-    // Validati una volta: difficulty e num_nodes li fissa il bootstrapper.
-    // num_nodes e' anche il divisore di minerId % num_nodes, quindi lo 0 va
-    // escluso prima di calcolare il nodeId.
+    // Controlli una volta sola: num_nodes e' anche il divisore che sceglie il
+    // nodeId, quindi lo zero va intercettato qui.
     if (st->difficulty == 0) {
         minerLog(log, minerId, "difficulty non valida (0): il miner non parte");
         fclose(log);
@@ -188,8 +182,8 @@ int runMiner(SharedState *st, int minerId) {
         return PARSE_ERROR;
     }
 
-    // Il miner si aggancia a un solo node: partizione stabile per id. Ne
-    // segue la testa pubblicata (NodeHead) per cima corrente e abort.
+    // Ogni miner si aggancia a un solo node, in modo stabile, e ne segue la
+    // testa pubblicata per sapere la cima e quando abortire.
     uint32_t nodeId = (uint32_t)minerId % st->num_nodes;
 
     minerLog(log, minerId, "avviato, difficulty=%u, agganciato al node %u",
@@ -205,8 +199,8 @@ int runMiner(SharedState *st, int minerId) {
             sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
-        // Niente blocchi vuoti: se il pool e' vuoto si aspetta a passi da 100ms
-        // rileggendo st->running (stop reattivo) e si ricostruisce.
+        // Niente blocchi vuoti: a pool vuoto si aspetta a passi da 100ms,
+        // rileggendo st->running per non ritardare lo stop.
         if (candidate.tx_count == 0) {
             for (int passo = 0; passo < 10 && st->running; passo++) {
                 sleepInterruptible(0.1);
@@ -221,7 +215,7 @@ int runMiner(SharedState *st, int minerId) {
         int result = minerMineCandidate(st, nodeId, &candidate, builtOnIndex);
 
         if (result == MINER_ABORTED) {
-            // Shutdown: le tx si perdono, il sistema si sta fermando comunque.
+            // Shutdown: le tx si perdono, tanto il sistema si sta fermando.
             if (!st->running) {
                 minerLog(log, minerId,
                          "shutdown durante il mining: scarto %u tx", candidate.tx_count);
@@ -231,9 +225,8 @@ int runMiner(SharedState *st, int minerId) {
             minerLog(log, minerId,
                      "abort: cima avanzata, reinserisco %u tx nel pool",
                      candidate.tx_count);
-            // Le tx di un blocco abortito sono ancora valide: tornano nel pool.
-            // txpoolTimedput a passi da 200ms rileggendo st->running: a pool pieno
-            // non restiamo appesi e allo shutdown molliamo.
+            // Le tx del blocco abortito sono ancora valide, quindi tornano nel
+            // pool. Il put a scadenza evita di restare appesi a pool pieno.
             for (uint32_t i = 0; i < candidate.tx_count && st->running; i++) {
                 while (st->running && txpoolTimedput(st, &candidate.tx[i], 200) != SUCCESS) {
                     /* pool pieno: ritenta finche' non si libera o parte lo stop */
@@ -252,8 +245,8 @@ int runMiner(SharedState *st, int minerId) {
                  (unsigned long long)candidate.index, (unsigned long long)candidate.nonce);
 
         // Broadcast a tutte le inbox (-1 = nessuna esclusione): sono i node a
-        // validarlo/appenderlo e a ripubblicare la testa. Best-effort: salta le
-        // inbox piene.
+        // validare, appendere e ripubblicare la testa. Best-effort: le inbox
+        // piene vengono saltate.
         int putrc = inboxBroadcast(st, &candidate, -1);
         if (putrc != SUCCESS) {
             minerLog(log, minerId, "errore broadcast blocco ai node: %s", codesToString(putrc));

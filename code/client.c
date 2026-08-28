@@ -12,9 +12,7 @@
 #include "utils/errors.h"
 #include "utils/tx.h"
 
-/* ================= Helper interni (non esposti in client.h) ============ */
-
-// Scrive una riga di log con timestamp, id del client e pid.
+// Riga di log con timestamp, id del client e pid.
 static void clientLog(FILE *log, int clientId, const char *fmt, ...) {
     if (log == NULL) {
         return;
@@ -34,11 +32,11 @@ static void clientLog(FILE *log, int clientId, const char *fmt, ...) {
     va_end(args);
 
     fprintf(log, "\n");
-    fflush(log); // il log deve restare leggibile anche se il processo viene ucciso
+    fflush(log); // il log resta leggibile anche se il processo viene ucciso
 }
 
 /* Pausa dopo un errore transitorio: evita di riciclare il loop a CPU piena
- * senza incidere sulla latenza dello shutdown. */
+ * senza rallentare lo shutdown. */
 #define ERROR_RETRY_SECONDS 0.1
 
 // nanosleep che riprende dal residuo se interrotto da un signal (EINTR).
@@ -56,8 +54,6 @@ static void sleepInterruptible(double seconds) {
     }
 }
 
-/* ============================ API pubblica ============================= */
-
 int clientGenerateTransaction(Transaction *out) {
     if (out == NULL) {
         return PARSE_ERROR;
@@ -73,14 +69,14 @@ int clientGenerateTransaction(Transaction *out) {
     int receiverIdx;
     do {
         receiverIdx = (int)(random() % nameCount);
-    } while (receiverIdx == senderIdx); // evitiamo "Alice pays Alice ..."
+    } while (receiverIdx == senderIdx); // niente "Alice pays Alice ..."
 
     int amount = 1 + (int)(random() % 1000); // mai 0: la regex vuole [1-9][0-9]*
 
     int n = snprintf(out->text, TX_MAX_LEN, "%s pays %s %d coins",
                       names[senderIdx], names[receiverIdx], amount);
     if (n < 0 || n >= TX_MAX_LEN) {
-        return MEMORY_ERROR; // non dovrebbe accadere con nomi fissi e TX_MAX_LEN=256
+        return MEMORY_ERROR; // improbabile con nomi fissi e TX_MAX_LEN=256
     }
 
     return SUCCESS;
@@ -96,8 +92,8 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
         return PARSE_ERROR;
     }
 
-    // Seed per-processo: i client nascono da fork() quasi nello stesso istante,
-    // senza lo XOR col pid genererebbero sequenze identiche.
+    // Seed per processo: i client nascono da fork() quasi nello stesso istante,
+    // senza lo XOR col pid produrrebbero sequenze identiche.
     srandom((unsigned int)(time(NULL) ^ getpid()));
 
     char logName[64];
@@ -120,19 +116,18 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
             continue;
         }
 
-        // Le tx sono gia' valide per costruzione, ma le verifichiamo contro
-        // la regex ufficiale prima di sottometterle: difesa in profondita'.
+        // Le tx sono gia' valide per costruzione, ma le ripassiamo alla regex
+        // prima del submit: difesa in profondita'.
         if (txIsValid(tx.text) != SUCCESS) {
             clientLog(log, clientId, "tx generata malformata, scartata: %s", tx.text);
             sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
 
-        // Backpressure senza restare appesi allo shutdown: txpoolTimedput a passi
-        // da 200ms rileggendo st->running. A pool pieno il client aspetta, ma se
-        // parte lo stop molla invece di bloccarsi mentre nessun miner drena il pool.
+        // Backpressure a pool pieno, ma con scadenza: rileggendo st->running non
+        // restiamo bloccati qui quando nessun miner sta piu' drenando il pool.
         while (st->running && txpoolTimedput(st, &tx, 200) != SUCCESS) {
-            /* pool pieno: ritenta finche' non si libera o parte lo shutdown */
+            /* pool pieno: ritenta finche' non si libera o parte lo stop */
         }
         if (!st->running) {
             break;

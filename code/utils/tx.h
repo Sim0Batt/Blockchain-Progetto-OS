@@ -3,11 +3,9 @@
 
 #include "../utils/errors.h"
 
-/* ============================================================
- *  Validazione del formato testuale di una transazione.
- *  Vive qui perche' serve al miner (difesa in profondita' sulle tx prelevate
- *  dal pool) e al client (autocontrollo prima del submit).
- * ============================================================ */
+/* Validazione del formato testuale di una transazione. Sta in utils perche'
+ * serve sia al client, che si autocontrolla prima del submit, sia al miner,
+ * che ricontrolla le tx prese dal pool. */
 
 /* Ritorna SUCCESS se 's' rispetta il formato
  * "^[A-Za-z0-9]+ pays [A-Za-z0-9]+ [1-9][0-9]* coins$", altrimenti
