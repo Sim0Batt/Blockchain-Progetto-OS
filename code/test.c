@@ -67,8 +67,8 @@ int main(int argc, char *argv[]) {
     const char *genesisTx = "Genesis block";
     calculateMerkleRoot(genesisTx, merkleOut);
 printf("--- TEST MERKLE ROOT ---\n");
-    printf("Input transazioni: '%s'\n", genesisTx);
-    printf("Merkle Root calcolata: %s\n", merkleOut);
+    printf("Input transactions: '%s'\n", genesisTx);
+    printf("Merkle Root calculated: %s\n", merkleOut);
     printf("\n");
 
     Block testBlock;
@@ -96,12 +96,12 @@ printf("--- TEST MERKLE ROOT ---\n");
     printf("Block Merkle Root: %s\n", testBlock.merkle_root);
     printf("Final Block Hash: %s\n\n", blockHashOut);
 
-    printf("--- TEST CSV I/O E CHAIN VALIDATION ---\n");
+    printf("--- TEST CSV I/O AND CHAIN VALIDATION ---\n");
 
     // 1. Creiamo una chain fittizia ALLOCANDOLA SULL'HEAP
     Blockchain *originalChain = malloc(sizeof(Blockchain));
     if (originalChain == NULL) {
-        printf("Errore: memoria Heap insufficiente per allocare originalChain!\n");
+        printf("Error: insufficient Heap memory to allocate originalChain!\n");
         return 1;
     }
     memset(originalChain, 0, sizeof(Blockchain));
@@ -136,13 +136,13 @@ printf("--- TEST MERKLE ROOT ---\n");
     // 2. Salviamo lo stato sul file CSV
     const char *test_csv_file = "test_state.csv";
     int save_rc = saveBlockchainCsv(originalChain, test_csv_file);
-    printf("Salvataggio CSV (%s): %s\n", test_csv_file, codesToString(save_rc));
+    printf("CSV save (%s): %s\n", test_csv_file, codesToString(save_rc));
 
     if (save_rc == SUCCESS) {
         // 3. Creiamo una nuova chain vuota ALLOCANDOLA SULL'HEAP
         Blockchain *loadedChain = malloc(sizeof(Blockchain));
         if (loadedChain == NULL) {
-            printf("Errore: memoria Heap insufficiente per allocare loadedChain!\n");
+            printf("Error: insufficient Heap memory to allocate loadedChain!\n");
             free(originalChain);
             return 1;
         }
@@ -150,20 +150,20 @@ printf("--- TEST MERKLE ROOT ---\n");
 
         // 4. Carichiamo il file CSV
         int load_rc = loadCsv(test_csv_file, loadedChain);
-        printf("Caricamento CSV (%s): %s\n\n", test_csv_file, codesToString(load_rc));
+        printf("CSV load (%s): %s\n\n", test_csv_file, codesToString(load_rc));
 
         if (load_rc == SUCCESS) {
-            printf("--- RISULTATO DEL CARICAMENTO ---\n");
-            printf("Altezza originale: %llu | Altezza caricata: %llu\n",
+            printf("--- LOAD RESULT ---\n");
+            printf("Original height: %llu | Loaded height: %llu\n",
                    (unsigned long long)originalChain->height, (unsigned long long)loadedChain->height);
 
             // 5. Verifichiamo i dati letti dal Blocco 1
             if (loadedChain->height >= 2) {
                 Block loaded_b1 = loadedChain->blocks[1];
-                printf("\nDati del Blocco 1 caricato:\n");
+                printf("\nLoaded Block 1 data:\n");
                 printf(" - Index: %llu\n", (unsigned long long)loaded_b1.index);
                 printf(" - Prev Hash: %s\n", loaded_b1.prev_hash);
-                printf(" - Numero di transazioni: %u\n", loaded_b1.tx_count);
+                printf(" - Number of transactions: %u\n", loaded_b1.tx_count);
                 for (uint32_t i = 0; i < loaded_b1.tx_count; i++) {
                     printf("   [Tx %u]: %s\n", i, loaded_b1.tx[i].text);
                 }
@@ -176,7 +176,7 @@ printf("--- TEST MERKLE ROOT ---\n");
 
     /* ================= TEST CLIENT (workstream F) ================= */
 
-    printf("--- TEST CLIENT: GENERAZIONE TX VALIDE (100 tx) ---\n");
+    printf("--- TEST CLIENT: VALID TX GENERATION (100 tx) ---\n");
     srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
     int invalidCount = 0;
     for (int i = 0; i < 100; i++) {
@@ -184,14 +184,14 @@ printf("--- TEST MERKLE ROOT ---\n");
         int gen_rc = clientGenerateTransaction(&tx);
         if (gen_rc != SUCCESS || txIsValid(tx.text) != SUCCESS) {
             invalidCount++;
-            printf("  tx #%d NON valida: '%s' (%s)\n", i, tx.text, codesToString(gen_rc));
+            printf("  tx #%d NOT valid: '%s' (%s)\n", i, tx.text, codesToString(gen_rc));
         }
     }
-    printf("Transazioni non valide su 100: %d -> %s\n",
+    printf("Invalid transactions out of 100: %d -> %s\n",
            invalidCount, invalidCount == 0 ? codesToString(SUCCESS) : codesToString(INVALID_TRANSACTION));
     printf("\n");
 
-    printf("--- TEST CLIENT: SEED PER-PROCESSO (sequenze diverse) ---\n");
+    printf("--- TEST CLIENT: PER-PROCESS SEED (different sequences) ---\n");
     // Due seed diversi simulano due client con pid diversi: e' lo scenario
     // che srandom(time(NULL) ^ getpid()) in runClient() garantisce.
     Transaction seqA[5], seqB[5];
@@ -207,7 +207,7 @@ printf("--- TEST MERKLE ROOT ---\n");
         if (genRc != SUCCESS) seqRc = genRc;
     }
     if (seqRc != SUCCESS) {
-        printf("Generazione sequenze FALLITA: %s\n", codesToString(seqRc));
+        printf("Sequence generation FAILED: %s\n", codesToString(seqRc));
     }
 
     int sequencesDiffer = 0;
@@ -217,18 +217,18 @@ printf("--- TEST MERKLE ROOT ---\n");
             break;
         }
     }
-    printf("Sequenza A[0]: %s\n", seqA[0].text);
-    printf("Sequenza B[0]: %s\n", seqB[0].text);
-    printf("Sequenze diverse con seed diversi: %s\n",
-           sequencesDiffer ? codesToString(SUCCESS) : "FALLITO (sequenze identiche)");
+    printf("Sequence A[0]: %s\n", seqA[0].text);
+    printf("Sequence B[0]: %s\n", seqB[0].text);
+    printf("Different sequences with different seeds: %s\n",
+           sequencesDiffer ? codesToString(SUCCESS) : "FAILED (identical sequences)");
     printf("\n");
 
     /* ================= TEST MINER (workstream E) ================= */
 
-    printf("--- TEST MINER: MINING CON DIFFICULTY PICCOLA ---\n");
+    printf("--- TEST MINER: MINING WITH SMALL DIFFICULTY ---\n");
     SharedState *minerTestSt = malloc(sizeof(SharedState));
     if (minerTestSt == NULL) {
-        printf("Errore: memoria insufficiente per il test del miner\n");
+        printf("Error: insufficient memory for the miner test\n");
     } else {
         memset(minerTestSt, 0, sizeof(SharedState));
         // difficulty=1 rende il test deterministico (random() % 1 == 0
@@ -246,23 +246,23 @@ printf("--- TEST MERKLE ROOT ---\n");
 
         srandom((unsigned int)time(NULL) ^ (unsigned int)getpid());
         int result = minerMineCandidate(minerTestSt, 0, &candidate, 0);
-        printf("Esito mining (difficulty=1, cima non avanzata): %s\n",
+        printf("Mining result (difficulty=1, tip not advanced): %s\n",
                result == MINER_MINED ? "MINER_MINED" : codesToString(result));
-        printf("Nonce dopo il mining: %llu\n", (unsigned long long)candidate.nonce);
+        printf("Nonce after mining: %llu\n", (unsigned long long)candidate.nonce);
 
         sem_destroy(&minerTestSt->heads[0].mutex);
         free(minerTestSt);
     }
     printf("\n");
 
-    printf("--- TEST MINER: ABORT SU CIMA AVANZATA (canale NodeHead) ---\n");
+    printf("--- TEST MINER: ABORT ON ADVANCED TIP (NodeHead channel) ---\n");
     // Ora che il canale node -> miner esiste (NodeHead), l'abort per cima
     // avanzata e' testabile in-process: si costruisce sull'index 0, poi un
     // node "pubblica" una testa piu' alta e minerShouldAbort deve segnalare
     // che il lavoro e' stale.
     SharedState *tipSt = malloc(sizeof(SharedState));
     if (tipSt == NULL) {
-        printf("Errore: memoria insufficiente per il test della cima\n");
+        printf("Error: insufficient memory for the tip test\n");
     } else {
         memset(tipSt, 0, sizeof(SharedState));
         tipSt->num_nodes = 1;
@@ -274,24 +274,24 @@ printf("--- TEST MERKLE ROOT ---\n");
                         "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0");
         int abortAvanzato = minerShouldAbort(tipSt, 0, 0);    // cima a height 1: abort
 
-        printf("Abort con cima ferma (height 0):    %d (atteso 0)\n", abortFermo);
-        printf("Abort con cima avanzata (height 1): %d (atteso 1)\n", abortAvanzato);
-        printf("Esito: %s\n",
-               (!abortFermo && abortAvanzato) ? codesToString(SUCCESS) : "FALLITO");
+        printf("Abort with unchanged tip (height 0):    %d (expected 0)\n", abortFermo);
+        printf("Abort with advanced tip (height 1): %d (expected 1)\n", abortAvanzato);
+        printf("Result: %s\n",
+               (!abortFermo && abortAvanzato) ? codesToString(SUCCESS) : "FAILED");
 
         sem_destroy(&tipSt->heads[0].mutex);
         free(tipSt);
     }
     printf("\n");
 
-    printf("--- TEST MINER: ABORT SU SHUTDOWN (fork + shared mmap) ---\n");
+    printf("--- TEST MINER: ABORT ON SHUTDOWN (fork + shared mmap) ---\n");
     // Serve memoria realmente condivisa: su memoria normale il figlio
     // scriverebbe su una copia copy-on-write, invisibile al padre. Il mutex
     // della testa e' pshared=1 perche' vive nella mappatura condivisa.
     SharedState *abortSt = mmap(NULL, sizeof(SharedState), PROT_READ | PROT_WRITE,
                                  MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (abortSt == MAP_FAILED) {
-        printf("Errore: mmap fallita per il test di abort\n");
+        printf("Error: mmap failed for the abort test\n");
     } else {
         memset(abortSt, 0, sizeof(SharedState));
         abortSt->difficulty = 1000000; // alta apposta: non deve minare per caso
@@ -314,10 +314,10 @@ printf("--- TEST MERKLE ROOT ---\n");
             int abortResult = minerMineCandidate(abortSt, 0, &candidate2, 0);
             waitpid(pid, NULL, 0);
 
-            printf("Esito mining con shutdown a meta' mining (atteso abort): %s\n",
-                   abortResult == MINER_ABORTED ? codesToString(SUCCESS) : "FALLITO (non ha abortito)");
+            printf("Mining result with shutdown mid-mining (expected abort): %s\n",
+                   abortResult == MINER_ABORTED ? codesToString(SUCCESS) : "FAILED (did not abort)");
         } else {
-            printf("Errore: fork fallita per il test di abort\n");
+            printf("Error: fork failed for the abort test\n");
         }
         sem_destroy(&abortSt->heads[0].mutex);
         munmap(abortSt, sizeof(SharedState));

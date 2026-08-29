@@ -3,6 +3,7 @@
 #include "utils/errors.h"
 #include "encoding/crypto.h"
 #include <string.h>
+#include <stdlib.h>
 #include "utils/csv_manager.h"
 #include <unistd.h>
 
@@ -98,26 +99,28 @@ int nodeHandleBlock(SharedState *st, uint32_t nodeId, Blockchain *chain, const B
 }
 
 int runNode(SharedState *st, uint32_t nodeId, const char *initialState) {
-    Blockchain chain;
-    memset(&chain, 0, sizeof(chain));
+    Blockchain *chain = malloc(sizeof(Blockchain));
+    if (chain == NULL) return MEMORY_ERROR;
+    memset(chain, 0, sizeof(Blockchain));
     char logname[64];
     snprintf(logname, sizeof(logname), "node-%d.log", (int)getpid());
     FILE *log = fopen(logname, "w");
-    if (!log) return IO_ERROR;
+    if (!log) { free(chain); return IO_ERROR; }
 
     if (initialState != NULL) {
-        if (loadCsv(initialState, &chain) != SUCCESS) {
+        if (loadCsv(initialState, chain) != SUCCESS) {
             fprintf(stderr, "Error: no initial state found\n");
             fclose(log);
+            free(chain);
             return PARSE_ERROR;
         }
 
-        if (chain.height > 0) {
+        if (chain->height > 0) {
             char topHash[HASH_BUF_SIZE];
-            calculateBlockHash(&chain.blocks[chain.height - 1], topHash);
-            nodePublishHead(st, nodeId, chain.height, topHash);
+            calculateBlockHash(&chain->blocks[chain->height - 1], topHash);
+            nodePublishHead(st, nodeId, chain->height, topHash);
         }
-        fprintf(log, "note %u: loaded initial state, height: %llu\n", nodeId, (unsigned long long)chain.height);
+        fprintf(log, "note %u: loaded initial state, height: %llu\n", nodeId, (unsigned long long)chain->height);
     }
 
 
@@ -127,14 +130,15 @@ int runNode(SharedState *st, uint32_t nodeId, const char *initialState) {
 
         if (blk.index == UINT64_MAX) {
             if (nodeId == 0) {
-                handleCliCommand(&chain, &blk);
+                handleCliCommand(chain, &blk);
             }
             continue;
         }
 
-        nodeHandleBlock(st, nodeId, &chain, &blk, log);
+        nodeHandleBlock(st, nodeId, chain, &blk, log);
         fflush(log);
     }
     fclose(log);
+    free(chain);
     return SUCCESS;
 }

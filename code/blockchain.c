@@ -58,6 +58,7 @@ void handleCommand(char cmd_buffer[512], unsigned long totalChildrens, pid_t *ch
         printf("Closing the system...\n");
         st->running = 0;
         for (unsigned long i = 0; i < totalChildrens; i++) {
+            kill(childrenPIDs[i], SIGCONT);
             kill(childrenPIDs[i], SIGINT);
         }
     }
@@ -169,16 +170,16 @@ int main(int argc, char *argv[]) {
     if (parseUnsigned(argv[1], &numNodes) != SUCCESS ||
         parseUnsigned(argv[2], &numMiners) != SUCCESS ||
         parseUnsigned(argv[3], &numClients) != SUCCESS) {
-        fprintf(stderr, "Errore: num_nodes, num_miners e num_clients devono essere interi.\n");
+        fprintf(stderr, "Error: num_nodes, num_miners and num_clients must be integer.\n");
         usage(argv[0]);
         return PARSE_ERROR;
     }
     if (argc >= 5 && parseUnsigned(argv[4], &txFrequency) != SUCCESS) {
-        fprintf(stderr, "Errore: transaction_frequency non valida.\n");
+        fprintf(stderr, "Error: transaction_frequency not valid.\n");
         return PARSE_ERROR;
     }
     if (argc >= 6 && parseUnsigned(argv[5], &difficulty) != SUCCESS) {
-        fprintf(stderr, "Errore: difficulty non valida.\n");
+        fprintf(stderr, "Error: difficulty not valid.\n");
         return PARSE_ERROR;
     }
     if (argc == 7) {
@@ -187,28 +188,32 @@ int main(int argc, char *argv[]) {
 
     /* Vincoli di dominio. */
     if (numNodes == 0) {
-        fprintf(stderr, "Errore: serve almeno un node.\n");
+        fprintf(stderr, "Error: at least one node is required.\n");
         return PARSE_ERROR;
     }
     if (numNodes > MAX_NODES) {
-        fprintf(stderr, "Errore: num_nodes massimo supportato e' %d.\n", MAX_NODES);
+        fprintf(stderr, "Error: maximum supported num_nodes is %d.\n", MAX_NODES);
         return PARSE_ERROR;
     }
     if (difficulty == 0) {
-        fprintf(stderr, "Errore: difficulty deve essere >= 1 (e' il denominatore "
-                        "della probabilita' di mining).\n");
+        fprintf(stderr, "Error: difficulty must be >= 1 (it is the denominator for mining probability).\n");
         return PARSE_ERROR;
     }
 
     printf("Start: %lu node, %lu miner, %lu client "
-           "(frequency=%lu, difficulty=%lu, stato iniziale=%s)\n",
+           "(frequency=%lu, difficulty=%lu, initial state=%s)\n",
            numNodes, numMiners, numClients, txFrequency, difficulty,
            initialState ? initialState : "none");
     
     if (initialState != NULL) {
-        Blockchain tmp;
-        memset(&tmp, 0, sizeof(Blockchain));
-        int load = loadCsv(initialState, &tmp);
+        Blockchain *tmp = malloc(sizeof(Blockchain));
+        if (tmp == NULL) {
+            fprintf(stderr, "Error: failed to allocate memory for initial state check.\n");
+            return MEMORY_ERROR;
+        }
+        memset(tmp, 0, sizeof(Blockchain));
+        int load = loadCsv(initialState, tmp);
+        free(tmp);
         if (load != SUCCESS) {
             fprintf(stderr, "Error: failed to initialize initial state\n");
             return load;
@@ -218,7 +223,7 @@ int main(int argc, char *argv[]) {
     /* --- 2. Creazione della shared memory (PRIMA di ogni fork) --- */
     SharedState *st = ipcCreate((uint32_t)difficulty, (uint32_t)numNodes);
     if (st == NULL) {
-        fprintf(stderr, "Errore: impossibile creare la shared memory.\n");
+        fprintf(stderr, "Error: failed to create shared memory.\n");
         return IPC_ERROR;
     }
 

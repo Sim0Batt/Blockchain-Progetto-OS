@@ -93,13 +93,14 @@ cmdMerkle(){
   local count=${#hashes[@]}
 
   if [[ $count -gt 0 ]]; then
+    local -a nextHashes
     while true; do
       if (( count % 2 != 0 )); then
         hashes+=("$emptyHash")
         ((count++))
       fi
 
-      local -a nextHashes
+      nextHashes=()
       for (( i=0; i<count; i+=2)); do
         local combined="${hashes[i]}${hashes[i+1]}"
         nextHashes+=($(calculateSha256 "$combined"))

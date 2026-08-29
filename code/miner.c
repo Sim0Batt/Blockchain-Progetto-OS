@@ -172,12 +172,12 @@ int runMiner(SharedState *st, int minerId) {
     // Controlli una volta sola: num_nodes e' anche il divisore che sceglie il
     // nodeId, quindi lo zero va intercettato qui.
     if (st->difficulty == 0) {
-        minerLog(log, minerId, "difficulty non valida (0): il miner non parte");
+        minerLog(log, minerId, "invalid difficulty (0): miner not starting");
         fclose(log);
         return PARSE_ERROR;
     }
     if (st->num_nodes == 0) {
-        minerLog(log, minerId, "nessun node attivo (num_nodes=0): il miner non parte");
+        minerLog(log, minerId, "no active node (num_nodes=0): miner not starting");
         fclose(log);
         return PARSE_ERROR;
     }
@@ -186,7 +186,7 @@ int runMiner(SharedState *st, int minerId) {
     // testa pubblicata per sapere la cima e quando abortire.
     uint32_t nodeId = (uint32_t)minerId % st->num_nodes;
 
-    minerLog(log, minerId, "avviato, difficulty=%u, agganciato al node %u",
+    minerLog(log, minerId, "started, difficulty=%u, attached to node %u",
              st->difficulty, nodeId);
 
     while (st->running) {
@@ -195,7 +195,7 @@ int runMiner(SharedState *st, int minerId) {
 
         int rc = minerBuildCandidate(st, nodeId, &candidate, &builtOnIndex);
         if (rc != SUCCESS) {
-            minerLog(log, minerId, "errore costruzione candidato: %s", codesToString(rc));
+            minerLog(log, minerId, "error building candidate: %s", codesToString(rc));
             sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
@@ -208,22 +208,22 @@ int runMiner(SharedState *st, int minerId) {
             continue;
         }
 
-        minerLog(log, minerId, "candidato costruito: index=%llu tx=%u",
+        minerLog(log, minerId, "candidate built: index=%llu tx=%u",
                  (unsigned long long)candidate.index, candidate.tx_count);
 
-        minerLog(log, minerId, "inizio mining su index=%llu", (unsigned long long)builtOnIndex);
+        minerLog(log, minerId, "starting mining on index=%llu", (unsigned long long)builtOnIndex);
         int result = minerMineCandidate(st, nodeId, &candidate, builtOnIndex);
 
         if (result == MINER_ABORTED) {
             // Shutdown: le tx si perdono, tanto il sistema si sta fermando.
             if (!st->running) {
                 minerLog(log, minerId,
-                         "shutdown durante il mining: scarto %u tx", candidate.tx_count);
+                         "shutdown during mining: discarding %u tx", candidate.tx_count);
                 continue;
             }
 
             minerLog(log, minerId,
-                     "abort: cima avanzata, reinserisco %u tx nel pool",
+                     "abort: tip advanced, re-queuing %u tx into the pool",
                      candidate.tx_count);
             // Le tx del blocco abortito sono ancora valide, quindi tornano nel
             // pool. Il put a scadenza evita di restare appesi a pool pieno.
@@ -236,12 +236,12 @@ int runMiner(SharedState *st, int minerId) {
         }
 
         if (result != MINER_MINED) {
-            minerLog(log, minerId, "errore durante il mining: %s", codesToString(result));
+            minerLog(log, minerId, "error during mining: %s", codesToString(result));
             sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
 
-        minerLog(log, minerId, "blocco minato: index=%llu nonce=%llu",
+        minerLog(log, minerId, "block mined: index=%llu nonce=%llu",
                  (unsigned long long)candidate.index, (unsigned long long)candidate.nonce);
 
         // Broadcast a tutte le inbox (-1 = nessuna esclusione): sono i node a
@@ -249,15 +249,15 @@ int runMiner(SharedState *st, int minerId) {
         // piene vengono saltate.
         int putrc = inboxBroadcast(st, &candidate, -1);
         if (putrc != SUCCESS) {
-            minerLog(log, minerId, "errore broadcast blocco ai node: %s", codesToString(putrc));
+            minerLog(log, minerId, "error broadcasting block to nodes: %s", codesToString(putrc));
             sleepInterruptible(ERROR_RETRY_SECONDS);
         } else {
-            minerLog(log, minerId, "blocco index=%llu inviato ai node",
+            minerLog(log, minerId, "block index=%llu sent to nodes",
                      (unsigned long long)candidate.index);
         }
     }
 
-    minerLog(log, minerId, "shutdown pulito (running=0)");
+    minerLog(log, minerId, "clean shutdown (running=0)");
     fclose(log);
     return SUCCESS;
 }

@@ -104,14 +104,14 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
     }
 
     double intervalSeconds = 1.0 / txFrequency;
-    clientLog(log, clientId, "avviato, frequenza=%.3f tx/s (intervallo=%.3fs)",
+    clientLog(log, clientId, "started, frequency=%.3f tx/s (interval=%.3fs)",
               txFrequency, intervalSeconds);
 
     while (st->running) {
         Transaction tx;
         int rc = clientGenerateTransaction(&tx);
         if (rc != SUCCESS) {
-            clientLog(log, clientId, "errore generazione tx: %s", codesToString(rc));
+            clientLog(log, clientId, "error generating tx: %s", codesToString(rc));
             sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
@@ -119,7 +119,7 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
         // Le tx sono gia' valide per costruzione, ma le ripassiamo alla regex
         // prima del submit: difesa in profondita'.
         if (txIsValid(tx.text) != SUCCESS) {
-            clientLog(log, clientId, "tx generata malformata, scartata: %s", tx.text);
+            clientLog(log, clientId, "generated tx malformed, discarded: %s", tx.text);
             sleepInterruptible(ERROR_RETRY_SECONDS);
             continue;
         }
@@ -132,12 +132,12 @@ int runClient(SharedState *st, double txFrequency, int clientId) {
         if (!st->running) {
             break;
         }
-        clientLog(log, clientId, "sottomessa: %s", tx.text);
+        clientLog(log, clientId, "submitted: %s", tx.text);
 
         sleepInterruptible(intervalSeconds);
     }
 
-    clientLog(log, clientId, "shutdown pulito (running=0)");
+    clientLog(log, clientId, "clean shutdown (running=0)");
     fclose(log);
     return SUCCESS;
 }
