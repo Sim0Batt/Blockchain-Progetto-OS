@@ -53,4 +53,20 @@ int nodePublishHead(SharedState *st, uint32_t nodeId, uint64_t height, const cha
 int minerReadTip(SharedState *st, uint32_t nodeId, uint64_t *height, char prevHash[HASH_BUF_SIZE]);
 int minerShouldAbort(SharedState *st, uint32_t nodeId, uint64_t builtOnIndex);
 
+/* inboxGet con scadenza: IPC_EMPTY se entro 'timeoutMs' non arriva niente.
+ * Serve al node per rileggere st->running e fare catch-up anche a inbox ferma. */
+int inboxTimedget(SharedState *st, uint32_t nodeId, Block *out, unsigned int timeoutMs);
+
+/* Arbitraggio: se l'indice e' libero 'blk' vince e viene registrato, altrimenti
+ * in 'out' torna il vincitore gia' deciso. Il chiamante applica 'out', mai 'blk'.
+ * Ritorna SUCCESS, CHAIN_MISMATCH, INVALID_BLOCK, PARSE_ERROR o MEMORY_ERROR. */
+int consensusDecide(SharedState *st, const Block *blk, Block *out);
+
+/* Copia in 'out' il vincitore di 'index', o BLOCK_NOT_FOUND se non e' deciso. */
+int consensusGet(SharedState *st, uint64_t index, Block *out);
+
+/* Segna come gia' decisi gli indici dell'initial_state.csv. La chiama il
+ * bootstrapper, dopo ipcCreate e prima delle fork(). */
+int consensusSeed(SharedState *st, const Blockchain *chain);
+
 #endif /* IPC_H */

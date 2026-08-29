@@ -1,5 +1,6 @@
 #include "ipc.h"
 #include "utils/errors.h"
+#include "encoding/crypto.h"
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -8,6 +9,14 @@
 #include <stdio.h>
 #include <errno.h>
 #include <time.h>
+
+/* Scadenza assoluta "adesso + timeoutMs", come la vuole sem_timedwait. */
+static void deadlineIn(struct timespec *ts, unsigned int timeoutMs) {
+    clock_gettime(CLOCK_REALTIME, ts);
+    ts->tv_sec  += timeoutMs / 1000;
+    ts->tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (ts->tv_nsec >= 1000000000L) { ts->tv_sec++; ts->tv_nsec -= 1000000000L; }
+}
 
 /* sem_wait che riprova se interrotto da un signal: pause/resume (SIGCONT) o un
  * SIGCHLD possono interrompere un'attesa in corso, e non e' un errore. */
@@ -41,6 +50,7 @@ SharedState *ipcCreate(uint32_t difficulty, uint32_t num_nodes) {
         sem_init(&st->inboxes[i].mutex, 1, 1);
         sem_init(&st->heads[i].mutex, 1, 1);
     }
+    sem_init(&st->consensus.mutex, 1, 1);
     return st;
 }
 
@@ -55,6 +65,7 @@ void ipcDestroy(SharedState *st) {
         sem_destroy(&st->inboxes[i].mutex);
         sem_destroy(&st->heads[i].mutex);
     }
+    sem_destroy(&st->consensus.mutex);
     munmap(st, sizeof(SharedState));
     shm_unlink(SHM_NAME);
 }
@@ -133,6 +144,22 @@ int inboxGet(SharedState *st, uint32_t nodeId, Block *out) {
     return SUCCESS;
 }
 
+int inboxTimedget(SharedState *st, uint32_t nodeId, Block *out, unsigned int timeoutMs) {
+    if (st == NULL || out == NULL || nodeId >= st->num_nodes) return PARSE_ERROR;
+    NodeInbox *ib = &st->inboxes[nodeId];
+    struct timespec ts;
+    deadlineIn(&ts, timeoutMs);
+    int r;
+    do { r = sem_timedwait(&ib->full, &ts); } while (r == -1 && errno == EINTR);
+    if (r == -1) return IPC_EMPTY;   /* scaduta: nessun blocco in attesa */
+    semWaitSafe(&ib->mutex);
+    *out = ib->slots[ib->head];
+    ib->head = (ib->head + 1) % NODE_INBOX_CAP;
+    sem_post(&ib->mutex);
+    sem_post(&ib->empty);
+    return SUCCESS;
+}
+
 /* Variante non bloccante di inboxPut, usata dalla propagazione: un node fermo
  * su un peer saturo smetterebbe di consumare la propria inbox, e con qualche
  * node in attesa reciproca si arriverebbe allo stallo. */
@@ -191,13 +218,84 @@ int minerShouldAbort(SharedState *st, uint32_t nodeId, uint64_t builtOnIndex) {
     return cur > builtOnIndex;
 }
 
+/* Arbitraggio per indice: unico punto in cui si decide chi vince a una data
+ * altezza, cosi' tutti i node applicano lo stesso blocco. */
+
+int consensusDecide(SharedState *st, const Block *blk, Block *out) {
+    if (st == NULL || blk == NULL || out == NULL) return PARSE_ERROR;
+    if (blk->index >= MAX_CHAIN) return MEMORY_ERROR;
+
+    ConsensusLog *cl = &st->consensus;
+    semWaitSafe(&cl->mutex);
+
+    DecidedSlot *slot = &cl->slots[blk->index];
+
+    if (!slot->valid) {
+        /* Un blocco stantio non deve vincere lo slot: si aggancerebbe al nulla
+         * e nessun node riuscirebbe piu' ad applicarlo. */
+        if (blk->index > 0) {
+            DecidedSlot *prev = &cl->slots[blk->index - 1];
+            if (!prev->valid) {
+                sem_post(&cl->mutex);
+                return INVALID_BLOCK;      /* buco: l'indice precedente non e' deciso */
+            }
+            if (strcmp(blk->prev_hash, prev->hash) != 0) {
+                sem_post(&cl->mutex);
+                return CHAIN_MISMATCH;     /* non si aggancia al vincitore precedente */
+            }
+        }
+        /* append-only: da qui lo slot non cambia piu' */
+        slot->block = *blk;
+        calculateBlockHash(&slot->block, slot->hash);
+        slot->valid = 1;
+        if (blk->index == cl->decided) {
+            cl->decided = blk->index + 1;
+        }
+    }
+
+    *out = slot->block;                    /* il vincitore, non per forza 'blk' */
+    sem_post(&cl->mutex);
+    return SUCCESS;
+}
+
+int consensusGet(SharedState *st, uint64_t index, Block *out) {
+    if (st == NULL || out == NULL) return PARSE_ERROR;
+    if (index >= MAX_CHAIN) return MEMORY_ERROR;
+
+    ConsensusLog *cl = &st->consensus;
+    semWaitSafe(&cl->mutex);
+    DecidedSlot *slot = &cl->slots[index];
+    int found = slot->valid;
+    if (found) {
+        *out = slot->block;
+    }
+    sem_post(&cl->mutex);
+    return found ? SUCCESS : BLOCK_NOT_FOUND;
+}
+
+int consensusSeed(SharedState *st, const Blockchain *chain) {
+    if (st == NULL || chain == NULL) return PARSE_ERROR;
+    if (chain->height > MAX_CHAIN) return MEMORY_ERROR;
+
+    ConsensusLog *cl = &st->consensus;
+    semWaitSafe(&cl->mutex);
+    for (uint64_t i = 0; i < chain->height; i++) {
+        DecidedSlot *slot = &cl->slots[i];
+        slot->block = chain->blocks[i];
+        calculateBlockHash(&slot->block, slot->hash);
+        slot->valid = 1;
+    }
+    if (chain->height > cl->decided) {
+        cl->decided = chain->height;
+    }
+    sem_post(&cl->mutex);
+    return SUCCESS;
+}
+
 int txpoolTimedput(SharedState *st, const Transaction *tx, unsigned int timeoutMs) {
     if (st == NULL || tx == NULL) return PARSE_ERROR;
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec  += timeoutMs / 1000;
-    ts.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    deadlineIn(&ts, timeoutMs);
     int r;
     do { r = sem_timedwait(&st->tx_pool.empty, &ts); } while (r == -1 && errno == EINTR);
     if (r == -1) return IPC_ERROR;   /* timeout scaduto */
