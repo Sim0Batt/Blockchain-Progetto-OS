@@ -34,13 +34,18 @@ buildTest(){
   $CC "${CFLAGS[@]}" "${TEST[@]}" -o test $LDFLAGS $LDLIBS
 }
 
+# La shm va tolta a mano: se il padre muore male non arriva mai a ipcDestroy
 clean() {
-  rm -f blockchain
+  rm -f blockchain test
+  rm -f *.o utils/*.o encoding/*.o
+  rm -f node-*.log miner-*.log client-*.log
+  rm -f /dev/shm/blockchain_*
 }
 
+# Scenario di default, sovrascrivibile con ARGS="5 3 2 1 4" ./build.sh run
 run() {
-  build
-  ./blockchain
+  build || return $?
+  ./blockchain ${ARGS:-3 2 5 1 12 initial_state.csv}
 }
 
 test(){

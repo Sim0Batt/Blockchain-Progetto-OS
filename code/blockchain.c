@@ -53,14 +53,48 @@ static int parseUnsigned(const char *s, unsigned long *out) {
     return SUCCESS;
 }
 
+/* Serve al gestore di segnale, che puo' solo azzerare 'running': il resto
+ * della chiusura lo fa il main quando esce dal loop della CLI. */
+static SharedState *volatile g_shutdownState = NULL;
+
+/* Senza questo gestore il padre moriva subito su Ctrl-C e lasciava il
+ * segmento /dev/shm orfano, perche' ipcDestroy non veniva mai chiamata. */
+static void shutdownSignalHandler(int signum) {
+    (void)signum;
+    if (g_shutdownState != NULL) {
+        g_shutdownState->running = 0;
+    }
+}
+
+/* Apposta senza SA_RESTART: cosi' la fgets() della CLI viene interrotta e il
+ * main si accorge che deve chiudere, invece di rimettersi in attesa. */
+static void installShutdownHandlers(SharedState *st) {
+    g_shutdownState = st;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = shutdownSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    if (sigaction(SIGINT, &sa, NULL) == -1) perror("sigaction (SIGINT)");
+    if (sigaction(SIGTERM, &sa, NULL) == -1) perror("sigaction (SIGTERM)");
+}
+
+/* Ferma i figli, SIGCONT compreso per svegliare quelli lasciati in 'pause'.
+ * Idempotente: la chiamano sia 'stop' sia l'uscita dal loop. */
+static void shutdownChildren(unsigned long totalChildrens, pid_t *childrenPIDs, SharedState *st) {
+    st->running = 0;
+    for (unsigned long i = 0; i < totalChildrens; i++) {
+        kill(childrenPIDs[i], SIGCONT);
+        kill(childrenPIDs[i], SIGINT);
+    }
+}
+
 void handleCommand(char cmd_buffer[512], unsigned long totalChildrens, pid_t *childrenPIDs, SharedState *st) {
     if (strncmp(cmd_buffer, "stop", 4) == 0) {
         printf("Closing the system...\n");
-        st->running = 0;
-        for (unsigned long i = 0; i < totalChildrens; i++) {
-            kill(childrenPIDs[i], SIGCONT);
-            kill(childrenPIDs[i], SIGINT);
-        }
+        shutdownChildren(totalChildrens, childrenPIDs, st);
     }
     else if (strncmp(cmd_buffer, "pause", 5) == 0) {
         printf("Pausing the system...\n");
@@ -138,9 +172,13 @@ void handleCommand(char cmd_buffer[512], unsigned long totalChildrens, pid_t *ch
             inboxPut(st, 0 , &cmdBlock);
         }
     }
-    else if (strncmp(cmd_buffer, "request block-hash ", 19) == 0) {
+    /* sintassi da specifica; accettiamo ancora la vecchia "request block-hash" */
+    else if ((strncmp(cmd_buffer, "request block ", 14) == 0 && strstr(cmd_buffer, "--hash ")) ||
+             strncmp(cmd_buffer, "request block-hash ", 19) == 0) {
         char hash[HASH_BUF_SIZE];
-        if (sscanf(cmd_buffer + 19, "%64s", hash) == 1) {
+        const char *arg = strstr(cmd_buffer, "--hash ");
+        arg = (arg != NULL) ? arg + 7 : cmd_buffer + 19;
+        if (sscanf(arg, "%64s", hash) == 1) {
             Block cmdBlock;
             memset(&cmdBlock, 0, sizeof(Block));
             cmdBlock.index = UINT64_MAX;
@@ -204,17 +242,24 @@ int main(int argc, char *argv[]) {
            "(frequency=%lu, difficulty=%lu, initial state=%s)\n",
            numNodes, numMiners, numClients, txFrequency, difficulty,
            initialState ? initialState : "none");
-    
+
+    /* In pipe stdout e' a buffer pieno: senza flush ogni figlio eredita una
+     * copia del buffer alla fork() e la ristampa. */
+    fflush(stdout);
+
+    /* Carichiamo e validiamo lo stato iniziale prima di creare la shm, cosi'
+     * un CSV corrotto blocca l'avvio senza allocare risorse IPC. */
+    Blockchain *seed = NULL;
     if (initialState != NULL) {
-        Blockchain *tmp = malloc(sizeof(Blockchain));
-        if (tmp == NULL) {
+        seed = malloc(sizeof(Blockchain));
+        if (seed == NULL) {
             fprintf(stderr, "Error: failed to allocate memory for initial state check.\n");
             return MEMORY_ERROR;
         }
-        memset(tmp, 0, sizeof(Blockchain));
-        int load = loadCsv(initialState, tmp);
-        free(tmp);
+        memset(seed, 0, sizeof(Blockchain));
+        int load = loadCsv(initialState, seed);
         if (load != SUCCESS) {
+            free(seed);
             fprintf(stderr, "Error: failed to initialize initial state\n");
             return load;
         }
@@ -223,13 +268,35 @@ int main(int argc, char *argv[]) {
     /* --- 2. Creazione della shared memory (PRIMA di ogni fork) --- */
     SharedState *st = ipcCreate((uint32_t)difficulty, (uint32_t)numNodes);
     if (st == NULL) {
+        free(seed);
         fprintf(stderr, "Error: failed to create shared memory.\n");
         return IPC_ERROR;
     }
 
+    /* Gli indici dello stato iniziale contano come gia' decisi: il primo da
+     * arbitrare e' quello subito dopo la cima caricata. */
+    if (seed != NULL) {
+        int rc = consensusSeed(st, seed);
+        free(seed);
+        seed = NULL;
+        if (rc != SUCCESS) {
+            fprintf(stderr, "Error: failed to seed the consensus log (rc=%d)\n", rc);
+            ipcDestroy(st);
+            return rc;
+        }
+    }
+
     unsigned long totalChildrens = numNodes + numMiners + numClients;
     pid_t *childrenPIDs = malloc(totalChildrens * sizeof(pid_t));
+    if (childrenPIDs == NULL) {
+        fprintf(stderr, "Error: failed to allocate the children PID table.\n");
+        ipcDestroy(st);
+        return MEMORY_ERROR;
+    }
     unsigned long currentChild = 0;
+
+    /* qui perche' il gestore ha bisogno di st per fermare il sistema */
+    installShutdownHandlers(st);
 
     /* --- 3. Fork dei node: ogni figlio esegue runNode e non ritorna --- */
     for (unsigned long i = 0; i < numNodes; i++) {
@@ -248,14 +315,6 @@ int main(int argc, char *argv[]) {
 
         childrenPIDs[currentChild++] = pid;
     }
-
-
-
-    (void)numMiners;
-    (void)numClients;
-    (void)txFrequency;
-    (void)initialState;
-
 
     // Fork dei Miners
     for (unsigned long i = 0; i < numMiners; i++) {
@@ -294,12 +353,13 @@ int main(int argc, char *argv[]) {
     // Loop CLI
     char cmd_buffer[512];
     printf("\n--- BLOCKCHAIN CLI ---\n");
-    printf("Commands: submit, pause, resume, stop, save blockchain, request blockchain, request block, request block-hash\n");
+    printf("Commands: submit, pause, resume, stop, save blockchain, request blockchain, request block\n");
     while (st->running) {
         printf("> ");
         fflush(stdout);
 
         if (fgets(cmd_buffer, sizeof(cmd_buffer), stdin) == NULL) {
+            /* EOF sullo stdin, o fgets interrotta da SIGINT/SIGTERM */
             break;
         }
         cmd_buffer[strcspn(cmd_buffer, "\r\n")] = 0;
@@ -307,7 +367,9 @@ int main(int argc, char *argv[]) {
         handleCommand(cmd_buffer, totalChildrens, childrenPIDs, st);
     }
 
-    printf("Node started\n");
+    /* Se siamo usciti per EOF o per un segnale i figli sono ancora vivi e la
+     * wait() qui sotto resterebbe appesa. */
+    shutdownChildren(totalChildrens, childrenPIDs, st);
 
     int status = 0;
     while (wait(&status) > 0);

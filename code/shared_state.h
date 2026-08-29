@@ -55,11 +55,27 @@ typedef struct {
     sem_t    mutex;
 } NodeHead;
 
-/* Stato condiviso: solo canali di comunicazione, nessuna chain. */
+/* Registro di arbitraggio: un solo blocco vincitore per indice, append-only.
+ * Non e' la chain, e' solo l'arbitro fra miner che vanno alla stessa altezza. */
+typedef struct {
+    Block block;                  /* blocco vincitore per questo indice */
+    char  hash[HASH_BUF_SIZE];    /* hash del vincitore, calcolato una volta sola */
+    int   valid;                  /* 0 = indice non ancora deciso */
+} DecidedSlot;
+
+typedef struct {
+    DecidedSlot slots[MAX_CHAIN]; /* slots[i] = esito deciso per l'indice i */
+    uint64_t    decided;          /* quanti indici consecutivi sono decisi */
+    sem_t       mutex;            /* serializza la decisione di un indice */
+} ConsensusLog;
+
+/* Stato condiviso: canali di comunicazione + registro di arbitraggio.
+ * La chain non sta qui: ogni node ne tiene la propria copia locale. */
 typedef struct {
     TxPool       tx_pool;               /* client -> miner */
     NodeInbox    inboxes[MAX_NODES];    /* miner/peer -> node */
     NodeHead     heads[MAX_NODES];      /* node -> miner (coordinamento) */
+    ConsensusLog consensus;             /* arbitraggio globale per indice */
     uint32_t     num_nodes;             /* node attivi (<= MAX_NODES) */
     uint32_t     difficulty;
     volatile int running;

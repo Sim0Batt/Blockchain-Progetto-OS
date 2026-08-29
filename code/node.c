@@ -78,24 +78,65 @@ void handleCliCommand(Blockchain *chain, const Block *cmd) {
     fflush(stdout);
 }
 
-int nodeHandleBlock(SharedState *st, uint32_t nodeId, Blockchain *chain, const Block *blk, FILE *log) {
-    uint64_t before = chain->height;
-    int rc = appendChainBlock(chain, blk);
-    if (rc == SUCCESS) {
-        /* la testa pubblicata qui e' quella che legge il miner agganciato */
+/* Catch-up: applica in ordine i blocchi gia' decisi partendo dalla propria
+ * altezza. Cosi' un node che si e' perso un blocco recupera da solo, senza
+ * dipendere dalla ri-propagazione dei peer che e' best-effort. */
+int nodeApplyDecided(SharedState *st, uint32_t nodeId, Blockchain *chain, FILE *log) {
+    int applied = 0;
+
+    while (chain->height < MAX_CHAIN) {
+        Block decided;
+        if (consensusGet(st, chain->height, &decided) != SUCCESS) {
+            break;                       /* prossimo indice non ancora deciso */
+        }
+
+        uint64_t before = chain->height;
+        int rc = appendChainBlock(chain, &decided);
+        if (rc != SUCCESS) {
+            /* non dovrebbe capitare: meglio fermarsi che divergere */
+            if (log) fprintf(log, "node %u: catch-up stopped at index=%llu (rc=%d)\n",
+                             nodeId, (unsigned long long)before, rc);
+            break;
+        }
+
         char topHash[HASH_BUF_SIZE];
         calculateBlockHash(&chain->blocks[chain->height - 1], topHash);
+        /* la testa pubblicata qui e' quella che legge il miner agganciato */
         nodePublishHead(st, nodeId, chain->height, topHash);
-        if (log) fprintf(log, "node %u: appended index=%llu (height %llu->%llu), propagating\n",
-                         nodeId, (unsigned long long)blk->index,
+        if (log) fprintf(log, "node %u: appended index=%llu hash=%s (height %llu->%llu)\n",
+                         nodeId, (unsigned long long)decided.index, topHash,
                          (unsigned long long)before, (unsigned long long)chain->height);
-        /* blocco nuovo: propaga ai peer, escludendo se stessi */
-        inboxBroadcast(st, blk, (int)nodeId);
-    } else {
+        applied++;
+    }
+
+    return applied;
+}
+
+int nodeHandleBlock(SharedState *st, uint32_t nodeId, Blockchain *chain, const Block *blk, FILE *log) {
+    /* Prima l'arbitraggio: se un altro miner aveva gia' vinto quell'indice,
+     * 'winner' e' il suo blocco. Applicando sempre il vincitore i node non
+     * divergono per via dell'ordine di arrivo nelle inbox. */
+    Block winner;
+    int rc = consensusDecide(st, blk, &winner);
+    if (rc != SUCCESS) {
         if (log) fprintf(log, "node %u: rejected index=%llu (rc=%d), not propagating\n",
                          nodeId, (unsigned long long)blk->index, rc);
+        return rc;
     }
-    return rc;
+
+    /* la copia locale si aggiorna solo dal registro: un unico percorso di
+     * append sia per i blocchi appena arrivati sia per quelli recuperati */
+    int applied = nodeApplyDecided(st, nodeId, chain, log);
+
+    if (applied > 0) {
+        /* blocco nuovo per noi: propaga ai peer, escludendo se stessi */
+        inboxBroadcast(st, &winner, (int)nodeId);
+    } else if (log) {
+        fprintf(log, "node %u: index=%llu already known, not propagating\n",
+                nodeId, (unsigned long long)blk->index);
+    }
+
+    return SUCCESS;
 }
 
 int runNode(SharedState *st, uint32_t nodeId, const char *initialState) {
@@ -120,13 +161,21 @@ int runNode(SharedState *st, uint32_t nodeId, const char *initialState) {
             calculateBlockHash(&chain->blocks[chain->height - 1], topHash);
             nodePublishHead(st, nodeId, chain->height, topHash);
         }
-        fprintf(log, "note %u: loaded initial state, height: %llu\n", nodeId, (unsigned long long)chain->height);
+        fprintf(log, "node %u: loaded initial state, height: %llu\n", nodeId, (unsigned long long)chain->height);
     }
 
 
     while (st->running) {
+        /* catch-up a ogni giro, anche se nessun peer ci ha ripropagato niente */
+        if (nodeApplyDecided(st, nodeId, chain, log) > 0) {
+            fflush(log);
+        }
+
+        /* attesa con scadenza, non bloccante: cosi' il giro si ripete e
+         * rileggiamo st->running anche a inbox ferma */
         Block blk;
-        if (inboxGet(st, nodeId, &blk) != SUCCESS) continue;
+        int rc = inboxTimedget(st, nodeId, &blk, 200);
+        if (rc != SUCCESS) continue;   /* IPC_EMPTY: nessun blocco, si riprova */
 
         if (blk.index == UINT64_MAX) {
             if (nodeId == 0) {

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
+#include <ctype.h>
 
 #include "../shared_state.h"
 #include "../utils/errors.h"
@@ -9,13 +10,27 @@
 #include "csv_manager.h"
 #include "../encoding/encoding.h"
 
+// Vero se 's' e' fatta di esattamente 'expected' cifre esadecimali.
+static int isHexString(const char *s, size_t expected) {
+    if (s == NULL || strlen(s) != expected) {
+        return 0;
+    }
+    for (size_t i = 0; i < expected; i++) {
+        if (!isxdigit((unsigned char)s[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 // Funzione per salvare la blockchain sul file CSV
 int saveBlockchainCsv(const Blockchain *chain, const char *filename) {
     FILE *file = fopen(filename, "w");
 
     if (!file) return IO_ERROR;
 
-    fprintf(file, "index, timestamp, prev_hash, merkle_root, nonce, transactions\n");
+    // Intestazione come da specifica, senza spazi dopo le virgole
+    fprintf(file, "index,timestamp,prev_hash,merkle_root,nonce,transactions\n");
 
     uint64_t height = chain->height;
 
@@ -80,16 +95,38 @@ int loadCsv(const char *filename, Blockchain *chain) {
         char indexStr[32], timestampStr[32], nonceStr[32];
         char transactionsStr[2048] = {0};
 
-        // Controllo per vedere se ci sono tutti i parametri senza spazi tramite Regex
-        if (sscanf(line, "%[^,],%[^,],%[^,],%[^,],%[^,],%[^\n]", indexStr, timestampStr,
-                   tmp.prev_hash, tmp.merkle_root, nonceStr, transactionsStr) < 5) {
+        // I limiti di larghezza sono obbligatori: %[^,] senza limite copia fino
+        // alla virgola successiva e su un campo malformato sfonda il buffer.
+        if (sscanf(line, "%31[^,],%31[^,],%64[^,],%64[^,],%31[^,],%2047[^\n]",
+                   indexStr, timestampStr, tmp.prev_hash, tmp.merkle_root,
+                   nonceStr, transactionsStr) < 5) {
             fclose(file);
             return PARSE_ERROR;
         }
 
-        hexToU64(indexStr, &tmp.index);
-        hexToU64(timestampStr, &tmp.timestamp);
-        hexToU64(nonceStr, &tmp.nonce);
+        // I campi numerici sono hex a 16 cifre: li validiamo prima di convertirli
+        if (!isHexString(indexStr, HEX_U64_SIZE) ||
+            !isHexString(timestampStr, HEX_U64_SIZE) ||
+            !isHexString(nonceStr, HEX_U64_SIZE)) {
+            fclose(file);
+            return PARSE_ERROR;
+        }
+
+        // Senza controllare il ritorno, un campo invalido restava a 0 dal memset
+        // e il CSV corrotto passava per buono
+        if (hexToU64(indexStr, &tmp.index) != SUCCESS ||
+            hexToU64(timestampStr, &tmp.timestamp) != SUCCESS ||
+            hexToU64(nonceStr, &tmp.nonce) != SUCCESS) {
+            fclose(file);
+            return PARSE_ERROR;
+        }
+
+        // Su questi due si regge la verifica della catena, devono essere esatti
+        if (!isHexString(tmp.prev_hash, HASH_HEX_LEN) ||
+            !isHexString(tmp.merkle_root, HASH_HEX_LEN)) {
+            fclose(file);
+            return PARSE_ERROR;
+        }
 
         char *transactionPointer = transactionsStr;
         size_t transactionsLength = strlen(transactionPointer);

@@ -63,6 +63,16 @@ static void sleepInterruptible(double seconds) {
     }
 }
 
+// Rimette nel pool le tx di un candidato che non finira' in catena: sono
+// ancora valide. Il put a scadenza evita di restare appesi a pool pieno.
+static void minerRequeueTx(SharedState *st, const Block *candidate) {
+    for (uint32_t i = 0; i < candidate->tx_count && st->running; i++) {
+        while (st->running && txpoolTimedput(st, &candidate->tx[i], 200) != SUCCESS) {
+            /* pool pieno: ritenta finche' non si libera o parte lo stop */
+        }
+    }
+}
+
 int minerBuildCandidate(SharedState *st, uint32_t nodeId, Block *candidate, uint64_t *builtOnIndex) {
     if (st == NULL || candidate == NULL || builtOnIndex == NULL) {
         return PARSE_ERROR;
@@ -225,13 +235,7 @@ int runMiner(SharedState *st, int minerId) {
             minerLog(log, minerId,
                      "abort: tip advanced, re-queuing %u tx into the pool",
                      candidate.tx_count);
-            // Le tx del blocco abortito sono ancora valide, quindi tornano nel
-            // pool. Il put a scadenza evita di restare appesi a pool pieno.
-            for (uint32_t i = 0; i < candidate.tx_count && st->running; i++) {
-                while (st->running && txpoolTimedput(st, &candidate.tx[i], 200) != SUCCESS) {
-                    /* pool pieno: ritenta finche' non si libera o parte lo stop */
-                }
-            }
+            minerRequeueTx(st, &candidate);
             continue;
         }
 
@@ -243,6 +247,29 @@ int runMiner(SharedState *st, int minerId) {
 
         minerLog(log, minerId, "block mined: index=%llu nonce=%llu",
                  (unsigned long long)candidate.index, (unsigned long long)candidate.nonce);
+
+        // Arbitraggio prima del broadcast: se un altro miner ha gia' vinto
+        // questo indice il nostro blocco non entrera' mai in catena, quindi le
+        // tx tornano nel pool invece di andare perse.
+        Block winner;
+        int decrc = consensusDecide(st, &candidate, &winner);
+        if (decrc != SUCCESS) {
+            minerLog(log, minerId, "block index=%llu refused by arbitration (%s), re-queuing %u tx",
+                     (unsigned long long)candidate.index, codesToString(decrc), candidate.tx_count);
+            minerRequeueTx(st, &candidate);
+            continue;
+        }
+
+        char candidateHash[HASH_BUF_SIZE];
+        char winnerHash[HASH_BUF_SIZE];
+        calculateBlockHash(&candidate, candidateHash);
+        calculateBlockHash(&winner, winnerHash);
+        if (strcmp(candidateHash, winnerHash) != 0) {
+            minerLog(log, minerId, "lost the race on index=%llu, re-queuing %u tx",
+                     (unsigned long long)candidate.index, candidate.tx_count);
+            minerRequeueTx(st, &candidate);
+            continue;
+        }
 
         // Broadcast a tutte le inbox (-1 = nessuna esclusione): sono i node a
         // validare, appendere e ripubblicare la testa. Best-effort: le inbox
